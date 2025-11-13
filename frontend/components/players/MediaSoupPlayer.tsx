@@ -12,7 +12,7 @@ interface MediaSoupPlayerProps {
 
 export default function MediaSoupPlayer({
   roomId,
-  mediasoupUrl = 'ws://10.30.250.245:3001',
+  mediasoupUrl = 'ws://10.30.250.245:8080/ws/mediasoup',  // Proxy through backend
   shouldConnect = false,
   onLog
 }: MediaSoupPlayerProps) {

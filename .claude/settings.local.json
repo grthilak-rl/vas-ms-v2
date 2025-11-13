@@ -30,7 +30,21 @@
       "Bash(docker exec:*)",
       "Bash(docker restart:*)",
       "Bash(sort:*)",
-      "Bash(sed:*)"
+      "Bash(sed:*)",
+      "Bash(alembic stamp:*)",
+      "Bash(docker stop:*)",
+      "Bash(docker start:*)",
+      "Bash(docker-compose:*)",
+      "Bash(docker rm:*)",
+      "Bash(pkill:*)",
+      "Bash(docker run:*)",
+      "Bash(docker network:*)",
+      "Bash(COMPOSE_HTTP_TIMEOUT=180 docker-compose:*)",
+      "Bash(export COMPOSE_HTTP_TIMEOUT=180)",
+      "Bash(MEDIASOUP_WORKER_OPTIONS='{}' docker-compose:*)",
+      "Bash(sudo ufw status:*)",
+      "Bash(ip addr:*)",
+      "Bash(sudo iptables:*)"
     ],
     "deny": [],
     "ask": []

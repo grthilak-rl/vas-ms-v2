@@ -1,20 +1,33 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useImperativeHandle, forwardRef } from 'react';
+import { captureBookmarkHistorical } from '@/lib/api';
 
 interface HLSPlayerProps {
   streamUrl: string;
   deviceName: string;
   deviceId?: string;
   onSnapshotCaptured?: (snapshotId: string) => void;
+  hideControls?: boolean;
 }
 
-export default function HLSPlayer({ streamUrl, deviceName, deviceId, onSnapshotCaptured }: HLSPlayerProps) {
-  const videoRef = useRef<HTMLVideoElement>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [capturingSnapshot, setCapturingSnapshot] = useState(false);
-  const [snapshotSuccess, setSnapshotSuccess] = useState(false);
+export interface HLSPlayerRef {
+  getVideoElement: () => HTMLVideoElement | null;
+}
+
+const HLSPlayer = forwardRef<HLSPlayerRef, HLSPlayerProps>(
+  ({ streamUrl, deviceName, deviceId, onSnapshotCaptured, hideControls = false }, ref) => {
+    const videoRef = useRef<HTMLVideoElement>(null);
+    const [error, setError] = useState<string | null>(null);
+    const [loading, setLoading] = useState(true);
+    const [capturingSnapshot, setCapturingSnapshot] = useState(false);
+    const [snapshotSuccess, setSnapshotSuccess] = useState(false);
+    const [capturingBookmark, setCapturingBookmark] = useState(false);
+    const [bookmarkSuccess, setBookmarkSuccess] = useState(false);
+
+    useImperativeHandle(ref, () => ({
+      getVideoElement: () => videoRef.current,
+    }));
 
   const handleCaptureSnapshot = async () => {
     if (!deviceId) {
@@ -25,8 +38,15 @@ export default function HLSPlayer({ streamUrl, deviceName, deviceId, onSnapshotC
     try {
       setCapturingSnapshot(true);
 
+      // For HLS rolling buffer: calculate how far back from "now" we are
       const currentTime = videoRef.current?.currentTime || 0;
-      const timestamp = new Date(Date.now() - (currentTime * 1000)).toISOString();
+      const duration = videoRef.current?.duration || 0;
+
+      // How many seconds behind the live edge are we?
+      const secondsBehind = duration - currentTime;
+
+      // Calculate the actual timestamp
+      const timestamp = new Date(Date.now() - (secondsBehind * 1000)).toISOString();
 
       const response = await fetch(
         `${process.env.NEXT_PUBLIC_API_URL || 'http://10.30.250.245:8080'}/api/v1/snapshots/devices/${deviceId}/capture/historical`,
@@ -50,6 +70,38 @@ export default function HLSPlayer({ streamUrl, deviceName, deviceId, onSnapshotC
       console.error('Snapshot capture error:', error);
     } finally {
       setCapturingSnapshot(false);
+    }
+  };
+
+  const handleCaptureBookmark = async () => {
+    if (!deviceId) {
+      console.error('Device ID not provided');
+      return;
+    }
+
+    try {
+      setCapturingBookmark(true);
+
+      // For HLS rolling buffer: calculate how far back from "now" we are
+      const currentTime = videoRef.current?.currentTime || 0;
+      const duration = videoRef.current?.duration || 0;
+
+      // How many seconds behind the live edge are we?
+      const secondsBehind = duration - currentTime;
+
+      // Calculate the actual timestamp for the center of the bookmark
+      const centerTimestamp = new Date(Date.now() - (secondsBehind * 1000)).toISOString();
+
+      const bookmark = await captureBookmarkHistorical(deviceId, centerTimestamp);
+      console.log('✅ Bookmark captured:', bookmark.id);
+
+      setBookmarkSuccess(true);
+      setTimeout(() => setBookmarkSuccess(false), 2000);
+    } catch (error: any) {
+      console.error('❌ Bookmark capture error:', error);
+      alert('Failed to capture bookmark: ' + (error.message || 'Unknown error'));
+    } finally {
+      setCapturingBookmark(false);
     }
   };
 
@@ -190,37 +242,68 @@ export default function HLSPlayer({ streamUrl, deviceName, deviceId, onSnapshotC
         playsInline
       />
 
-      {/* Snapshot button - Only show when not loading/error and deviceId provided */}
-      {!loading && !error && deviceId && (
-        <button
-          onClick={handleCaptureSnapshot}
-          disabled={capturingSnapshot}
-          className="absolute top-4 right-4 px-4 py-2 rounded-lg text-sm font-medium bg-blue-600 text-white hover:bg-blue-700 disabled:bg-gray-600 disabled:cursor-not-allowed transition-colors flex items-center gap-2 z-20"
-          title="Capture snapshot from historical recording"
-        >
-          {capturingSnapshot ? (
-            <>
-              <svg className="animate-spin h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-              </svg>
-              Capturing...
-            </>
-          ) : (
-            <>
-              <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
-                <path fillRule="evenodd" d="M4 5a2 2 0 00-2 2v8a2 2 0 002 2h12a2 2 0 002-2V7a2 2 0 00-2-2h-1.586a1 1 0 01-.707-.293l-1.121-1.121A2 2 0 0011.172 3H8.828a2 2 0 00-1.414.586L6.293 4.707A1 1 0 015.586 5H4zm6 9a3 3 0 100-6 3 3 0 000 6z" clipRule="evenodd" />
-              </svg>
-              Snapshot
-            </>
-          )}
-        </button>
+      {/* Capture buttons - Only show when not loading/error and deviceId provided and not hiding controls */}
+      {!loading && !error && deviceId && !hideControls && (
+        <div className="absolute top-4 right-4 flex gap-2 z-20">
+          <button
+            onClick={handleCaptureSnapshot}
+            disabled={capturingSnapshot}
+            className="px-4 py-2 rounded-lg text-sm font-medium bg-green-600 text-white hover:bg-green-700 disabled:bg-gray-600 disabled:cursor-not-allowed transition-colors flex items-center gap-2"
+            title="Capture snapshot from historical recording"
+          >
+            {capturingSnapshot ? (
+              <>
+                <svg className="animate-spin h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                </svg>
+                Capturing...
+              </>
+            ) : (
+              <>
+                <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+                  <path fillRule="evenodd" d="M4 5a2 2 0 00-2 2v8a2 2 0 002 2h12a2 2 0 002-2V7a2 2 0 00-2-2h-1.586a1 1 0 01-.707-.293l-1.121-1.121A2 2 0 0011.172 3H8.828a2 2 0 00-1.414.586L6.293 4.707A1 1 0 015.586 5H4zm6 9a3 3 0 100-6 3 3 0 000 6z" clipRule="evenodd" />
+                </svg>
+                Snapshot
+              </>
+            )}
+          </button>
+
+          <button
+            onClick={handleCaptureBookmark}
+            disabled={capturingBookmark}
+            className="px-4 py-2 rounded-lg text-sm font-medium bg-purple-600 text-white hover:bg-purple-700 disabled:bg-gray-600 disabled:cursor-not-allowed transition-colors flex items-center gap-2"
+            title="Capture 6-second bookmark clip from historical recording"
+          >
+            {capturingBookmark ? (
+              <>
+                <svg className="animate-spin h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                </svg>
+                Capturing...
+              </>
+            ) : (
+              <>
+                <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+                  <path d="M5 4a2 2 0 012-2h6a2 2 0 012 2v14l-5-2.5L5 18V4z" />
+                </svg>
+                Bookmark
+              </>
+            )}
+          </button>
+        </div>
       )}
 
-      {/* Snapshot success indicator */}
+      {/* Success indicators */}
       {snapshotSuccess && (
         <div className="absolute top-20 right-4 px-4 py-2 rounded-lg text-sm font-medium bg-green-600 text-white z-20">
           ✓ Snapshot saved!
+        </div>
+      )}
+      {bookmarkSuccess && (
+        <div className="absolute top-28 right-4 px-4 py-2 rounded-lg text-sm font-medium bg-purple-600 text-white z-20">
+          ✓ Bookmark saved!
         </div>
       )}
 
@@ -246,4 +329,8 @@ export default function HLSPlayer({ streamUrl, deviceName, deviceId, onSnapshotC
       )}
     </div>
   );
-}
+});
+
+HLSPlayer.displayName = 'HLSPlayer';
+
+export default HLSPlayer;

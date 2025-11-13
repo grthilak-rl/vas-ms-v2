@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useRef, useImperativeHandle, forwardRef } from 'react';
 import MediaSoupPlayer from './MediaSoupPlayer';
 import dynamic from 'next/dynamic';
 
@@ -11,19 +11,39 @@ interface DualModePlayerProps {
   deviceName: string;
   shouldConnect?: boolean;
   onLog?: (message: string) => void;
+  onModeChange?: (mode: 'live' | 'historical') => void;
+}
+
+export interface DualModePlayerRef {
+  getMode: () => 'live' | 'historical';
+  getVideoElement: () => HTMLVideoElement | null;
 }
 
 type StreamMode = 'live' | 'historical';
 
-export default function DualModePlayer({ deviceId, deviceName, shouldConnect = false, onLog }: DualModePlayerProps) {
-  const [mode, setMode] = useState<StreamMode>('live');
+const DualModePlayer = forwardRef<DualModePlayerRef, DualModePlayerProps>(
+  ({ deviceId, deviceName, shouldConnect = false, onLog, onModeChange }, ref) => {
+    const [mode, setMode] = useState<StreamMode>('live');
+    const hlsPlayerRef = useRef<any>(null);
+
+    const handleModeChange = (newMode: StreamMode) => {
+      setMode(newMode);
+      if (onModeChange) {
+        onModeChange(newMode);
+      }
+    };
+
+    useImperativeHandle(ref, () => ({
+      getMode: () => mode,
+      getVideoElement: () => hlsPlayerRef.current?.getVideoElement() || null,
+    }));
 
   return (
     <div className="relative w-full h-full">
       {/* Mode selector */}
       <div className="absolute top-4 left-4 z-20 flex gap-2">
         <button
-          onClick={() => setMode('live')}
+          onClick={() => handleModeChange('live')}
           className={`px-4 py-2 rounded-lg font-medium transition-all ${
             mode === 'live'
               ? 'bg-red-600 text-white shadow-lg'
@@ -39,7 +59,7 @@ export default function DualModePlayer({ deviceId, deviceName, shouldConnect = f
         </button>
 
         <button
-          onClick={() => setMode('historical')}
+          onClick={() => handleModeChange('historical')}
           className={`px-4 py-2 rounded-lg font-medium transition-all ${
             mode === 'historical'
               ? 'bg-blue-600 text-white shadow-lg'
@@ -60,15 +80,17 @@ export default function DualModePlayer({ deviceId, deviceName, shouldConnect = f
         {mode === 'live' ? (
           <MediaSoupPlayer
             roomId={deviceId}
-            mediasoupUrl="ws://10.30.250.245:3001"
+            mediasoupUrl="ws://10.30.250.245:8080/ws/mediasoup"
             shouldConnect={shouldConnect}
             onLog={onLog}
           />
         ) : (
           <HLSPlayer
+            ref={hlsPlayerRef}
             streamUrl={`${process.env.NEXT_PUBLIC_API_URL || 'http://10.30.250.245:8080'}/api/v1/recordings/devices/${deviceId}/playlist`}
             deviceName={deviceName}
             deviceId={deviceId}
+            hideControls={true}
           />
         )}
       </div>
@@ -91,4 +113,8 @@ export default function DualModePlayer({ deviceId, deviceName, shouldConnect = f
       </div>
     </div>
   );
-}
+});
+
+DualModePlayer.displayName = 'DualModePlayer';
+
+export default DualModePlayer;

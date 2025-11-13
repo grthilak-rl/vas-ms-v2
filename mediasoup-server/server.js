@@ -23,7 +23,7 @@ const config = {
     numWorkers: 2,
     worker: {
       rtcMinPort: 40000,
-      rtcMaxPort: 40099,
+      rtcMaxPort: 40999,
       logLevel: 'debug',  // Enable debug logging to see RTP packet details
       logTags: [
         'info',

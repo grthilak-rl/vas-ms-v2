@@ -1,7 +1,7 @@
 """
 Main FastAPI application entry point.
 """
-from fastapi import FastAPI, Request, status
+from fastapi import FastAPI, Request, status, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.exceptions import RequestValidationError
@@ -11,6 +11,8 @@ from datetime import datetime
 from sqlalchemy import text
 import sys
 import os
+import asyncio
+import websockets
 
 # Add current directory to path for imports
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -152,7 +154,7 @@ async def root():
     }
 
 # API routes
-from app.routes import devices, streams, mediasoup, rtsp_pipeline, recordings, websocket, snapshots
+from app.routes import devices, streams, mediasoup, rtsp_pipeline, recordings, websocket, snapshots, bookmarks
 
 app.include_router(devices.router)
 app.include_router(streams.router)
@@ -161,6 +163,7 @@ app.include_router(rtsp_pipeline.router)
 app.include_router(recordings.router)
 app.include_router(websocket.router)
 app.include_router(snapshots.router)
+app.include_router(bookmarks.router)
 
 # Add routes for HLS streaming (without api/v1 prefix for convenience)
 from fastapi.responses import FileResponse
@@ -207,6 +210,66 @@ async def serve_hls_segment(stream_id: str, segment_name: str, request: Request)
             "Access-Control-Allow-Origin": "*"
         }
     )
+
+# MediaSoup WebSocket Proxy
+@app.websocket("/ws/mediasoup")
+async def mediasoup_websocket_proxy(websocket: WebSocket):
+    """
+    WebSocket proxy to MediaSoup server.
+    This allows the frontend to connect through the backend (port 8080)
+    instead of directly to MediaSoup (port 3001), solving network/firewall issues.
+    """
+    await websocket.accept()
+    logger.info(f"WebSocket proxy: Client connected from {websocket.client.host}")
+    
+    mediasoup_url = os.getenv("MEDIASOUP_URL", "ws://10.30.250.245:3001")
+    mediasoup_ws = None
+    
+    try:
+        # Connect to MediaSoup server
+        logger.info(f"WebSocket proxy: Connecting to MediaSoup at {mediasoup_url}")
+        mediasoup_ws = await websockets.connect(mediasoup_url)
+        logger.info("WebSocket proxy: Connected to MediaSoup server")
+        
+        # Create bidirectional proxy
+        async def client_to_mediasoup():
+            """Forward messages from client to MediaSoup"""
+            try:
+                while True:
+                    data = await websocket.receive_text()
+                    logger.debug(f"WebSocket proxy: Client → MediaSoup: {data[:100]}...")
+                    await mediasoup_ws.send(data)
+            except WebSocketDisconnect:
+                logger.info("WebSocket proxy: Client disconnected")
+            except Exception as e:
+                logger.error(f"WebSocket proxy: Error in client→mediasoup: {e}")
+        
+        async def mediasoup_to_client():
+            """Forward messages from MediaSoup to client"""
+            try:
+                async for message in mediasoup_ws:
+                    logger.debug(f"WebSocket proxy: MediaSoup → Client: {message[:100]}...")
+                    await websocket.send_text(message)
+            except Exception as e:
+                logger.error(f"WebSocket proxy: Error in mediasoup→client: {e}")
+        
+        # Run both directions concurrently
+        await asyncio.gather(
+            client_to_mediasoup(),
+            mediasoup_to_client(),
+            return_exceptions=True
+        )
+        
+    except Exception as e:
+        logger.error(f"WebSocket proxy: Connection error: {e}")
+        try:
+            await websocket.close(code=1011, reason=f"MediaSoup connection failed: {str(e)}")
+        except:
+            pass
+    finally:
+        if mediasoup_ws:
+            await mediasoup_ws.close()
+        logger.info("WebSocket proxy: Connection closed")
 
 if __name__ == "__main__":
     import uvicorn
