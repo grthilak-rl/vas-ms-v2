@@ -169,7 +169,7 @@ export default function StreamsPage() {
       if (mode === 'live') {
         endpoint = `${process.env.NEXT_PUBLIC_API_URL || 'http://10.30.250.245:8080'}/api/v1/snapshots/devices/${deviceId}/capture/live`;
       } else {
-        // Historical mode - get timestamp from video position
+        // Historical mode - get timestamp from HLS playlist
         const playerRef = playerRefs.current[deviceId];
         const videoElement = playerRef?.getVideoElement();
 
@@ -177,15 +177,10 @@ export default function StreamsPage() {
           throw new Error('Video element not available');
         }
 
-        // For HLS rolling buffer: calculate how far back from "now" we are
         const currentTime = videoElement.currentTime || 0;
-        const duration = videoElement.duration || 0;
 
-        // How many seconds behind the live edge are we?
-        const secondsBehind = duration - currentTime;
-
-        // Calculate the actual timestamp
-        const timestamp = new Date(Date.now() - (secondsBehind * 1000)).toISOString();
+        // Get the actual timestamp by parsing the HLS playlist
+        const timestamp = await getTimestampFromHLSPosition(deviceId, currentTime);
 
         endpoint = `${process.env.NEXT_PUBLIC_API_URL || 'http://10.30.250.245:8080'}/api/v1/snapshots/devices/${deviceId}/capture/historical`;
         body = { timestamp };
@@ -219,6 +214,75 @@ export default function StreamsPage() {
     }
   };
 
+  const getTimestampFromHLSPosition = async (deviceId: string, currentTime: number): Promise<string> => {
+    // Fetch HLS playlist to get segment information
+    const playlistUrl = `${process.env.NEXT_PUBLIC_API_URL || 'http://10.30.250.245:8080'}/api/v1/recordings/devices/${deviceId}/playlist`;
+    const response = await fetch(playlistUrl);
+    const playlistText = await response.text();
+
+    // Parse playlist to extract segments and their durations
+    const lines = playlistText.split('\n');
+    const segments: { filename: string; duration: number; timestamp: number }[] = [];
+    let accumulatedTime = 0;
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i].trim();
+
+      // Check for segment duration line
+      if (line.startsWith('#EXTINF:')) {
+        const duration = parseFloat(line.split(':')[1].split(',')[0]);
+        const nextLine = lines[i + 1]?.trim();
+
+        if (nextLine && nextLine.endsWith('.ts')) {
+          // Extract Unix timestamp from filename: segment-1763031193.ts
+          const match = nextLine.match(/segment-(\d+)\.ts/);
+          if (match) {
+            const unixTimestamp = parseInt(match[1]);
+            segments.push({
+              filename: nextLine,
+              duration,
+              timestamp: unixTimestamp
+            });
+            accumulatedTime += duration;
+          }
+        }
+      }
+    }
+
+    if (segments.length === 0) {
+      throw new Error('No segments found in HLS playlist');
+    }
+
+    // Find which segment contains the currentTime position
+    let timeInPlaylist = 0;
+    for (const segment of segments) {
+      if (currentTime >= timeInPlaylist && currentTime < timeInPlaylist + segment.duration) {
+        // Found the segment! Calculate the offset within this segment
+        const offsetInSegment = currentTime - timeInPlaylist;
+        const actualTimestamp = segment.timestamp + offsetInSegment;
+
+        console.log('📍 Timestamp Calculation:', {
+          currentTime,
+          segmentFilename: segment.filename,
+          segmentStartTime: timeInPlaylist,
+          segmentTimestamp: segment.timestamp,
+          offsetInSegment,
+          calculatedTimestamp: actualTimestamp,
+          asDate: new Date(actualTimestamp * 1000).toISOString()
+        });
+
+        return new Date(actualTimestamp * 1000).toISOString();
+      }
+      timeInPlaylist += segment.duration;
+    }
+
+    // If we're past the end, use the last segment's timestamp
+    const lastSegment = segments[segments.length - 1];
+    const lastTimestamp = lastSegment.timestamp + lastSegment.duration;
+    console.warn('⚠️ Current time beyond playlist duration, using last segment');
+    return new Date(lastTimestamp * 1000).toISOString();
+  };
+
   const handleCaptureBookmark = async (deviceId: string) => {
     try {
       setCapturingBookmark(prev => ({ ...prev, [deviceId]: true }));
@@ -229,7 +293,7 @@ export default function StreamsPage() {
       if (mode === 'live') {
         bookmark = await captureBookmarkLive(deviceId);
       } else {
-        // Historical mode - check if segments are still available
+        // Historical mode - get timestamp from HLS playlist
         const playerRef = playerRefs.current[deviceId];
         const videoElement = playerRef?.getVideoElement();
 
@@ -237,24 +301,13 @@ export default function StreamsPage() {
           throw new Error('Video element not available');
         }
 
-        // For HLS rolling buffer: calculate how far back from "now" we are
         const currentTime = videoElement.currentTime || 0;
-        const duration = videoElement.duration || 0;
-        const secondsBehind = duration - currentTime;
 
-        // Check if the timestamp is too old (beyond rolling buffer retention)
-        const maxBufferAge = 600; // 10 minutes rolling buffer
-        if (secondsBehind > maxBufferAge) {
-          throw new Error(`Cannot capture bookmark from this point - segments too old (${Math.floor(secondsBehind / 60)} minutes ago). Historical bookmarks work best with recent playback.`);
-        }
+        // Get the actual timestamp by parsing the HLS playlist
+        const centerTimestamp = await getTimestampFromHLSPosition(deviceId, currentTime);
 
-        // Calculate the actual timestamp for the center of the bookmark
-        const centerTimestamp = new Date(Date.now() - (secondsBehind * 1000)).toISOString();
-
-        console.log('📍 Historical Bookmark Debug:', {
+        console.log('📍 Historical Bookmark Request:', {
           currentTime,
-          duration,
-          secondsBehind,
           centerTimestamp,
           now: new Date().toISOString()
         });

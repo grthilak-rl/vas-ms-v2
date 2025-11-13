@@ -316,9 +316,9 @@ class RTSPPipeline:
                 "-r", "30",
                 "-f", "hls",
                 "-hls_time", "6",  # 6-second segments
-                "-hls_list_size", "0",  # Keep all segments in playlist
+                "-hls_list_size", "600",  # Keep last 600 segments (1 hour at 6s each)
                 "-hls_flags", "append_list+delete_segments",
-                "-hls_delete_threshold", "1",
+                "-hls_delete_threshold", "600",  # Delete segments older than 600 segments
                 "-hls_segment_filename", hls_segment_pattern,
                 "-hls_start_number_source", "epoch",
                 hls_playlist_path
