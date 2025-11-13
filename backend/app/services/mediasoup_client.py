@@ -15,7 +15,7 @@ class MediaSoupClient:
     Client for communicating with MediaSoup server.
     """
     
-    def __init__(self, mediasoup_url: str = "ws://localhost:3001"):
+    def __init__(self, mediasoup_url: str = "ws://10.30.250.245:3001"):
         """Initialize MediaSoup client."""
         self.mediasoup_url = mediasoup_url
         self.websocket: Optional[websockets.WebSocketClientProtocol] = None

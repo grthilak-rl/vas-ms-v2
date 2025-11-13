@@ -1,8 +1,8 @@
 'use client';
 
-import { useState, useEffect } from 'react';
-import DualModePlayer from '@/components/players/DualModePlayer';
-import { getDevices, Device } from '@/lib/api';
+import { useState, useEffect, useRef } from 'react';
+import DualModePlayer, { DualModePlayerRef } from '@/components/players/DualModePlayer';
+import { getDevices, Device, captureBookmarkLive, captureBookmarkHistorical } from '@/lib/api';
 import { CameraIcon, VideoCameraIcon, PlayIcon, StopIcon } from '@heroicons/react/24/outline';
 
 type GridSize = 2 | 3 | 4;
@@ -17,6 +17,10 @@ export default function StreamsPage() {
   const [activeStreams, setActiveStreams] = useState<Record<string, boolean>>({});
   const [capturingSnapshot, setCapturingSnapshot] = useState<Record<string, boolean>>({});
   const [snapshotSuccess, setSnapshotSuccess] = useState<Record<string, boolean>>({});
+  const [capturingBookmark, setCapturingBookmark] = useState<Record<string, boolean>>({});
+  const [bookmarkSuccess, setBookmarkSuccess] = useState<Record<string, boolean>>({});
+  const [playerModes, setPlayerModes] = useState<Record<string, 'live' | 'historical'>>({});
+  const playerRefs = useRef<Record<string, DualModePlayerRef | null>>({});
 
   // Load persisted state on mount
   useEffect(() => {
@@ -158,13 +162,40 @@ export default function StreamsPage() {
     try {
       setCapturingSnapshot(prev => ({ ...prev, [deviceId]: true }));
 
-      const response = await fetch(
-        `${process.env.NEXT_PUBLIC_API_URL || 'http://10.30.250.245:8080'}/api/v1/snapshots/devices/${deviceId}/capture/live`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' }
+      const mode = playerModes[deviceId] || 'live';
+      let endpoint = '';
+      let body: any = {};
+
+      if (mode === 'live') {
+        endpoint = `${process.env.NEXT_PUBLIC_API_URL || 'http://10.30.250.245:8080'}/api/v1/snapshots/devices/${deviceId}/capture/live`;
+      } else {
+        // Historical mode - get timestamp from video position
+        const playerRef = playerRefs.current[deviceId];
+        const videoElement = playerRef?.getVideoElement();
+
+        if (!videoElement) {
+          throw new Error('Video element not available');
         }
-      );
+
+        // For HLS rolling buffer: calculate how far back from "now" we are
+        const currentTime = videoElement.currentTime || 0;
+        const duration = videoElement.duration || 0;
+
+        // How many seconds behind the live edge are we?
+        const secondsBehind = duration - currentTime;
+
+        // Calculate the actual timestamp
+        const timestamp = new Date(Date.now() - (secondsBehind * 1000)).toISOString();
+
+        endpoint = `${process.env.NEXT_PUBLIC_API_URL || 'http://10.30.250.245:8080'}/api/v1/snapshots/devices/${deviceId}/capture/historical`;
+        body = { timestamp };
+      }
+
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: Object.keys(body).length > 0 ? JSON.stringify(body) : undefined
+      });
 
       if (!response.ok) {
         const error = await response.json();
@@ -185,6 +216,65 @@ export default function StreamsPage() {
       alert('Failed to capture snapshot: ' + err.message);
     } finally {
       setCapturingSnapshot(prev => ({ ...prev, [deviceId]: false }));
+    }
+  };
+
+  const handleCaptureBookmark = async (deviceId: string) => {
+    try {
+      setCapturingBookmark(prev => ({ ...prev, [deviceId]: true }));
+
+      const mode = playerModes[deviceId] || 'live';
+      let bookmark;
+
+      if (mode === 'live') {
+        bookmark = await captureBookmarkLive(deviceId);
+      } else {
+        // Historical mode - check if segments are still available
+        const playerRef = playerRefs.current[deviceId];
+        const videoElement = playerRef?.getVideoElement();
+
+        if (!videoElement) {
+          throw new Error('Video element not available');
+        }
+
+        // For HLS rolling buffer: calculate how far back from "now" we are
+        const currentTime = videoElement.currentTime || 0;
+        const duration = videoElement.duration || 0;
+        const secondsBehind = duration - currentTime;
+
+        // Check if the timestamp is too old (beyond rolling buffer retention)
+        const maxBufferAge = 600; // 10 minutes rolling buffer
+        if (secondsBehind > maxBufferAge) {
+          throw new Error(`Cannot capture bookmark from this point - segments too old (${Math.floor(secondsBehind / 60)} minutes ago). Historical bookmarks work best with recent playback.`);
+        }
+
+        // Calculate the actual timestamp for the center of the bookmark
+        const centerTimestamp = new Date(Date.now() - (secondsBehind * 1000)).toISOString();
+
+        console.log('📍 Historical Bookmark Debug:', {
+          currentTime,
+          duration,
+          secondsBehind,
+          centerTimestamp,
+          now: new Date().toISOString()
+        });
+
+        bookmark = await captureBookmarkHistorical(deviceId, centerTimestamp);
+      }
+
+      console.log('✅ Bookmark captured:', bookmark.id);
+
+      // Show success indicator briefly
+      setBookmarkSuccess(prev => ({ ...prev, [deviceId]: true }));
+      setTimeout(() => {
+        setBookmarkSuccess(prev => ({ ...prev, [deviceId]: false }));
+      }, 2000);
+
+    } catch (err: any) {
+      console.error('❌ Failed to capture bookmark:', err);
+      alert('Failed to capture bookmark: ' + err.message);
+    } finally {
+      setCapturingBookmark(prev => ({ ...prev, [deviceId]: false }));
     }
   };
 
@@ -296,9 +386,13 @@ export default function StreamsPage() {
               {/* Video Player Area */}
               <div className="aspect-video bg-gray-900 relative">
                 <DualModePlayer
+                  ref={(el) => { playerRefs.current[device.id] = el; }}
                   deviceId={device.id}
                   deviceName={device.name}
                   shouldConnect={activeStreams[device.id] || false}
+                  onModeChange={(mode) => {
+                    setPlayerModes(prev => ({ ...prev, [device.id]: mode }));
+                  }}
                 />
                 {!device.is_active && !activeStreams[device.id] && (
                   <>
@@ -365,13 +459,17 @@ export default function StreamsPage() {
 
                   <button
                     onClick={() => handleCaptureSnapshot(device.id)}
-                    disabled={!activeStreams[device.id] || capturingSnapshot[device.id] || snapshotSuccess[device.id]}
+                    disabled={
+                      (playerModes[device.id] === 'live' && !activeStreams[device.id]) ||
+                      capturingSnapshot[device.id] ||
+                      snapshotSuccess[device.id]
+                    }
                     className={`flex-1 px-4 py-2 rounded-md text-sm font-medium flex items-center justify-center gap-2 transition-colors ${
                       snapshotSuccess[device.id]
                         ? 'bg-green-500 text-white cursor-default'
                         : 'bg-green-600 hover:bg-green-700 disabled:bg-gray-400 disabled:cursor-not-allowed text-white'
                     }`}
-                    title="Capture snapshot from live stream"
+                    title={playerModes[device.id] === 'historical' ? 'Capture snapshot from historical position' : 'Capture snapshot from live stream'}
                   >
                     {capturingSnapshot[device.id] ? (
                       <>
@@ -391,6 +489,42 @@ export default function StreamsPage() {
                           <path fillRule="evenodd" d="M4 5a2 2 0 00-2 2v8a2 2 0 002 2h12a2 2 0 002-2V7a2 2 0 00-2-2h-1.586a1 1 0 01-.707-.293l-1.121-1.121A2 2 0 0011.172 3H8.828a2 2 0 00-1.414.586L6.293 4.707A1 1 0 015.586 5H4zm6 9a3 3 0 100-6 3 3 0 000 6z" clipRule="evenodd" />
                         </svg>
                         Snapshot
+                      </>
+                    )}
+                  </button>
+
+                  <button
+                    onClick={() => handleCaptureBookmark(device.id)}
+                    disabled={
+                      (playerModes[device.id] === 'live' && !activeStreams[device.id]) ||
+                      capturingBookmark[device.id] ||
+                      bookmarkSuccess[device.id]
+                    }
+                    className={`flex-1 px-4 py-2 rounded-md text-sm font-medium flex items-center justify-center gap-2 transition-colors ${
+                      bookmarkSuccess[device.id]
+                        ? 'bg-purple-500 text-white cursor-default'
+                        : 'bg-purple-600 hover:bg-purple-700 disabled:bg-gray-400 disabled:cursor-not-allowed text-white'
+                    }`}
+                    title={playerModes[device.id] === 'historical' ? 'Capture 6-second bookmark from historical position (±3s)' : 'Capture 6-second bookmark from live stream (last 6s)'}
+                  >
+                    {capturingBookmark[device.id] ? (
+                      <>
+                        <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
+                        Capturing...
+                      </>
+                    ) : bookmarkSuccess[device.id] ? (
+                      <>
+                        <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+                          <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+                        </svg>
+                        Bookmarked!
+                      </>
+                    ) : (
+                      <>
+                        <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+                          <path d="M5 4a2 2 0 012-2h6a2 2 0 012 2v14l-5-2.5L5 18V4z" />
+                        </svg>
+                        Bookmark
                       </>
                     )}
                   </button>

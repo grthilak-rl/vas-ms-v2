@@ -2,6 +2,7 @@
 Device management API routes.
 """
 import asyncio
+import os
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from typing import List
@@ -207,10 +208,12 @@ async def start_device_stream(
 
         # 4. NOW start FFmpeg to send RTP to MediaSoup (producer already exists and ready)
         logger.info(f"Starting FFmpeg to send RTP to MediaSoup...")
+        # Use host IP since FFmpeg runs in container and MediaSoup runs on host
+        mediasoup_host_ip = os.getenv("MEDIASOUP_HOST_IP", "10.30.250.245")
         stream_info = await rtsp_pipeline.start_stream(
             stream_id=room_id,
             rtsp_url=device.rtsp_url,
-            mediasoup_ip="127.0.0.1",
+            mediasoup_ip=mediasoup_host_ip,
             mediasoup_video_port=video_port,
             ssrc=detected_ssrc  # Pass SSRC for logging
         )

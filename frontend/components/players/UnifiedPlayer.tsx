@@ -179,7 +179,7 @@ export default function UnifiedPlayer({ deviceId, deviceName, shouldConnect = fa
           <div className="w-full h-full">
             <MediaSoupPlayer
               roomId={deviceId}
-              mediasoupUrl="ws://10.30.250.245:3001"
+              mediasoupUrl="ws://10.30.250.245:8080/ws/mediasoup"
               shouldConnect={shouldConnect}
             />
           </div>
