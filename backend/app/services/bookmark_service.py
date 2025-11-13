@@ -180,45 +180,76 @@ class BookmarkService:
 
         logger.info(f"Capturing historical bookmark from {date_folder_path} at {center_timestamp}")
 
-        # Find the segment file that contains the start timestamp
-        # Segments are named with unix timestamp: segment-{unix_ts}.ts
+        # Find the segment file that contains the start timestamp by parsing the HLS playlist
+        # This matches the frontend's approach in getTimestampFromHLSPosition()
+        hls_playlist_path = os.path.join(os.path.dirname(date_folder_path), "stream.m3u8")
+
+        if not os.path.exists(hls_playlist_path):
+            raise FileNotFoundError(f"HLS playlist not found at {hls_playlist_path}")
+
+        # Parse HLS playlist to map timestamps to segments
+        segments_info = []  # List of (segment_filename, duration, unix_timestamp)
+
+        with open(hls_playlist_path, 'r') as f:
+            lines = f.readlines()
+            i = 0
+            while i < len(lines):
+                line = lines[i].strip()
+                if line.startswith('#EXTINF:'):
+                    # Get duration
+                    duration = float(line.split(':')[1].split(',')[0])
+                    # Get segment filename from next line
+                    if i + 1 < len(lines):
+                        seg_filename = lines[i + 1].strip()
+                        # Extract Unix timestamp from segment filename
+                        if seg_filename.startswith('segment-') and seg_filename.endswith('.ts'):
+                            seg_ts = int(seg_filename.split('-')[1].split('.')[0])
+                            segments_info.append((seg_filename, duration, seg_ts))
+                    i += 2
+                else:
+                    i += 1
+
+        if not segments_info:
+            raise FileNotFoundError(f"No valid segments found in HLS playlist")
+
+        # Find which segment contains the requested center timestamp
+        # Following the same logic as frontend: accumulate durations and find the matching segment
+        center_unix_ts = int(center_timestamp.timestamp())
         start_unix_ts = int(start_timestamp.timestamp())
 
-        # Find segments around the requested time (±30 seconds to account for segment duration)
-        segment_pattern = os.path.join(date_folder_path, f"segment-*.ts")
-        import glob
-        all_segments = sorted(glob.glob(segment_pattern))
+        # Find segments that cover the requested time range (start_timestamp to end_timestamp)
+        # We need 6 seconds total: from start_unix_ts to (start_unix_ts + 6)
+        end_unix_ts = int(end_timestamp.timestamp())
+        required_segments = []
 
-        if not all_segments:
-            raise FileNotFoundError(f"No segment files found in {date_folder_path}")
+        for seg_filename, duration, seg_ts in segments_info:
+            seg_end_ts = seg_ts + duration
+            # Include segment if it overlaps with our requested range
+            if (seg_ts <= start_unix_ts < seg_end_ts) or \
+               (seg_ts <= end_unix_ts < seg_end_ts) or \
+               (start_unix_ts <= seg_ts < end_unix_ts):
+                seg_path = os.path.join(date_folder_path, seg_filename)
+                required_segments.append((seg_ts, seg_path, duration))
 
-        # Find segments around the requested time
-        # We need a range of segments to ensure we have enough footage
-        target_segments = []
-        first_segment_ts = None
+        if not required_segments:
+            # Fallback: find closest segments
+            segments_info.sort(key=lambda x: abs(x[2] - center_unix_ts))
+            seg_filename, duration, seg_ts = segments_info[0]
+            seg_path = os.path.join(date_folder_path, seg_filename)
+            required_segments = [(seg_ts, seg_path, duration)]
+            logger.warning(f"No exact segment match, using closest: {seg_filename}")
 
-        for seg_path in all_segments:
-            seg_name = os.path.basename(seg_path)
-            seg_ts = int(seg_name.split('-')[1].split('.')[0])
-            # Include segments from 15 seconds before to 15 seconds after our target
-            if start_unix_ts - 15 <= seg_ts <= start_unix_ts + 15:
-                target_segments.append((seg_ts, seg_path))
+        # Sort segments by timestamp
+        required_segments.sort(key=lambda x: x[0])
 
-        if not target_segments:
-            # If no close segments, just use the closest ones
-            all_with_ts = [(int(os.path.basename(x).split('-')[1].split('.')[0]), x) for x in all_segments]
-            all_with_ts.sort(key=lambda x: abs(x[0] - start_unix_ts))
-            target_segments = all_with_ts[:3]  # Use 3 closest segments
-            logger.warning(f"No segments found near timestamp, using closest segments")
+        first_segment_ts = required_segments[0][0]
+        last_segment_ts = required_segments[-1][0]
 
-        # Sort by timestamp to maintain chronological order
-        target_segments.sort(key=lambda x: x[0])
-        first_segment_ts = target_segments[0][0]
-        last_segment_ts = target_segments[-1][0]
+        # Calculate seek offset within the first segment
+        offset_in_first_segment = max(0, start_unix_ts - first_segment_ts)
 
-        # Calculate seek offset within the concatenated segments
-        # This tells FFmpeg where to start extracting within our concat file
-        seek_offset = start_unix_ts - first_segment_ts
+        target_segments = [(ts, path) for ts, path, dur in required_segments]
+        seek_offset = offset_in_first_segment
 
         logger.info(f"📊 Segment Selection Debug:")
         logger.info(f"  - Requested center timestamp: {center_timestamp} (unix: {int(center_timestamp.timestamp())})")
