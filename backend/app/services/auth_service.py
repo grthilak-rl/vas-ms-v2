@@ -2,7 +2,7 @@
 import jwt
 import secrets
 import hashlib
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional, List, Dict, Any
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -10,6 +10,11 @@ from loguru import logger
 
 from app.models.auth import JWTToken, RefreshToken
 from config.settings import settings
+
+
+def _utcnow() -> datetime:
+    """Return current UTC time as timezone-aware datetime."""
+    return datetime.now(timezone.utc)
 
 
 class AuthService:
@@ -124,7 +129,7 @@ class AuthService:
             raise ValueError("Client is inactive")
 
         # Check if client has expired
-        if client.expires_at and client.expires_at < datetime.utcnow():
+        if client.expires_at and client.expires_at < _utcnow():
             raise ValueError("Client credentials have expired")
 
         # Generate access token
@@ -132,8 +137,8 @@ class AuthService:
             "sub": client_id,
             "scopes": client.scopes,
             "type": "access",
-            "iat": datetime.utcnow(),
-            "exp": datetime.utcnow() + timedelta(minutes=self.access_token_expire_minutes)
+            "iat": _utcnow(),
+            "exp": _utcnow() + timedelta(minutes=self.access_token_expire_minutes)
         }
         access_token = jwt.encode(access_token_payload, self.secret_key, algorithm=self.algorithm)
 
@@ -145,13 +150,13 @@ class AuthService:
             token_hash=refresh_token_hash,
             client_id=client_id,
             is_revoked=False,
-            expires_at=datetime.utcnow() + timedelta(days=self.refresh_token_expire_days)
+            expires_at=_utcnow() + timedelta(days=self.refresh_token_expire_days)
         )
 
         db.add(refresh_token_record)
 
         # Update last_used_at
-        client.last_used_at = datetime.utcnow()
+        client.last_used_at = _utcnow()
         await db.commit()
 
         logger.info(f"Generated tokens for client: {client_id}")
@@ -198,7 +203,7 @@ class AuthService:
             raise ValueError("Refresh token has been revoked")
 
         # Check if expired
-        if token_record.expires_at < datetime.utcnow():
+        if token_record.expires_at < _utcnow():
             raise ValueError("Refresh token has expired")
 
         # Fetch client
@@ -215,22 +220,37 @@ class AuthService:
             "sub": client.client_id,
             "scopes": client.scopes,
             "type": "access",
-            "iat": datetime.utcnow(),
-            "exp": datetime.utcnow() + timedelta(minutes=self.access_token_expire_minutes)
+            "iat": _utcnow(),
+            "exp": _utcnow() + timedelta(minutes=self.access_token_expire_minutes)
         }
         access_token = jwt.encode(access_token_payload, self.secret_key, algorithm=self.algorithm)
 
-        # Update refresh token used_at
-        token_record.used_at = datetime.utcnow()
-        client.last_used_at = datetime.utcnow()
+        # Token rotation: revoke old refresh token and create new one
+        token_record.is_revoked = True
+        token_record.used_at = _utcnow()
+
+        # Generate new refresh token
+        new_refresh_token_value = secrets.token_urlsafe(32)
+        new_refresh_token_hash = self._hash_secret(new_refresh_token_value)
+
+        new_refresh_token_record = RefreshToken(
+            token_hash=new_refresh_token_hash,
+            client_id=client.client_id,
+            is_revoked=False,
+            expires_at=_utcnow() + timedelta(days=self.refresh_token_expire_days)
+        )
+
+        db.add(new_refresh_token_record)
+        client.last_used_at = _utcnow()
         await db.commit()
 
-        logger.info(f"Refreshed access token for client: {client.client_id}")
+        logger.info(f"Refreshed tokens for client: {client.client_id} (token rotation)")
 
         return {
             "access_token": access_token,
             "token_type": "Bearer",
-            "expires_in": self.access_token_expire_minutes * 60
+            "expires_in": self.access_token_expire_minutes * 60,
+            "refresh_token": new_refresh_token_value
         }
 
     def verify_token(self, token: str) -> Dict[str, Any]:

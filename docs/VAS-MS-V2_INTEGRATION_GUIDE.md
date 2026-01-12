@@ -535,7 +535,7 @@ Authorization: Bearer <access_token>
       "id": "770e8400-e29b-41d4-a716-446655440002",
       "name": "Front Door Camera",
       "camera_id": "550e8400-e29b-41d4-a716-446655440000",
-      "state": "LIVE",
+      "state": "live",
       "endpoints": {
         "webrtc": "/v2/streams/770e8400.../consume",
         "hls": "/v2/streams/770e8400.../hls",
@@ -568,7 +568,7 @@ Authorization: Bearer <access_token>
   "id": "770e8400-e29b-41d4-a716-446655440002",
   "name": "Front Door Camera",
   "camera_id": "550e8400-e29b-41d4-a716-446655440000",
-  "state": "LIVE",
+  "state": "live",
   "codec_config": {
     "video": {
       "codec": "H264",
@@ -610,7 +610,7 @@ Authorization: Bearer <access_token>
 ```json
 {
   "stream_id": "770e8400-e29b-41d4-a716-446655440002",
-  "state": "LIVE",
+  "state": "live",
   "is_healthy": true,
   "uptime_seconds": 1800,
   "metrics": {
@@ -1143,14 +1143,16 @@ Authorization: Bearer <access_token>
 
 VAS-MS-V2 manages stream lifecycle through a finite state machine. Understanding these states is critical for proper integration.
 
+> **Note:** State values are returned in **lowercase** by the API (e.g., `"live"`, `"initializing"`).
+
 | State | Description | Can Attach Consumer? | Terminal? |
 |-------|-------------|---------------------|-----------|
-| `INITIALIZING` | Stream record created, setup in progress | No | No |
-| `READY` | SSRC captured, producer created, waiting for media | No | No |
-| `LIVE` | FFmpeg running, media actively flowing | **Yes** | No |
-| `ERROR` | Failure occurred (recoverable) | No | No |
-| `STOPPED` | Manually stopped by user/API | No | No |
-| `CLOSED` | Cleanup complete, resources released | No | **Yes** |
+| `initializing` | Stream record created, setup in progress | No | No |
+| `ready` | SSRC captured, producer created, waiting for media | No | No |
+| `live` | FFmpeg running, media actively flowing | **Yes** | No |
+| `error` | Failure occurred (recoverable) | No | No |
+| `stopped` | Manually stopped by user/API | No | No |
+| `closed` | Cleanup complete, resources released | No | **Yes** |
 
 ### 4.2 State Transition Diagram
 
@@ -1189,21 +1191,21 @@ VAS-MS-V2 manages stream lifecycle through a finite state machine. Understanding
 
 | From State | To State | Trigger | Notes |
 |------------|----------|---------|-------|
-| `INITIALIZING` | `READY` | SSRC captured successfully | Producer created in MediaSoup |
-| `INITIALIZING` | `ERROR` | SSRC capture failed | RTSP connection issue or no video |
-| `READY` | `LIVE` | FFmpeg started, media flowing | Consumers can now attach |
-| `READY` | `ERROR` | FFmpeg failed to start | Check RTSP URL and camera status |
-| `LIVE` | `STOPPED` | `stop-stream` API called | Graceful shutdown |
-| `LIVE` | `ERROR` | FFmpeg crashed or RTSP disconnected | Automatic recovery attempted |
-| `ERROR` | `INITIALIZING` | Automatic retry or manual restart | Up to 3 automatic retries |
-| `ERROR` | `CLOSED` | Max retries exceeded or manual close | Terminal state |
-| `STOPPED` | `INITIALIZING` | `start-stream` API called | Restart stream |
-| `STOPPED` | `CLOSED` | Cleanup timeout (5 min) or explicit close | Terminal state |
-| `*` | `CLOSED` | Stream deleted via API | Resources released |
+| `initializing` | `ready` | SSRC captured successfully | Producer created in MediaSoup |
+| `initializing` | `error` | SSRC capture failed | RTSP connection issue or no video |
+| `ready` | `live` | FFmpeg started, media flowing | Consumers can now attach |
+| `ready` | `error` | FFmpeg failed to start | Check RTSP URL and camera status |
+| `live` | `stopped` | `stop-stream` API called | Graceful shutdown |
+| `live` | `error` | FFmpeg crashed or RTSP disconnected | Automatic recovery attempted |
+| `error` | `initializing` | Automatic retry or manual restart | Up to 3 automatic retries |
+| `error` | `closed` | Max retries exceeded or manual close | Terminal state |
+| `stopped` | `initializing` | `start-stream` API called | Restart stream |
+| `stopped` | `closed` | Cleanup timeout (5 min) or explicit close | Terminal state |
+| `*` | `closed` | Stream deleted via API | Resources released |
 
 ### 4.4 State-Based API Behavior
 
-| API Endpoint | INITIALIZING | READY | LIVE | ERROR | STOPPED | CLOSED |
+| API Endpoint | initializing | ready | live | error | stopped | closed |
 |--------------|--------------|-------|------|-------|---------|--------|
 | `GET /v2/streams/{id}` | ✓ | ✓ | ✓ | ✓ | ✓ | 404 |
 | `POST /v2/streams/{id}/consume` | 409 | 409 | ✓ | 409 | 409 | 404 |
@@ -1231,21 +1233,21 @@ async function ensureStreamReady(streamId) {
     const stream = await response.json();
 
     switch (stream.state) {
-      case 'LIVE':
+      case 'live':
         return stream; // Ready to consume
 
-      case 'INITIALIZING':
-      case 'READY':
+      case 'initializing':
+      case 'ready':
         await sleep(pollInterval); // Wait and retry
         break;
 
-      case 'ERROR':
+      case 'error':
         throw new Error(`Stream error: ${stream.last_error}`);
 
-      case 'STOPPED':
+      case 'stopped':
         throw new Error('Stream is stopped');
 
-      case 'CLOSED':
+      case 'closed':
         throw new Error('Stream is closed');
 
       default:
@@ -1695,10 +1697,10 @@ transport.on('connectionstatechange', (state) => {
 });
 
 async function reconnectConsumer(streamId) {
-  // Check if stream is still LIVE
+  // Check if stream is still live
   const stream = await fetchStream(streamId);
 
-  if (stream.state === 'LIVE') {
+  if (stream.state === 'live') {
     // Re-attach consumer
     await attachConsumer(streamId);
   } else {
@@ -1823,8 +1825,8 @@ All VAS-MS-V2 API endpoints return errors in a consistent format to enable progr
   "status_code": 409,
   "details": {
     "stream_id": "770e8400-e29b-41d4-a716-446655440002",
-    "current_state": "INITIALIZING",
-    "required_state": "LIVE"
+    "current_state": "initializing",
+    "required_state": "live"
   },
   "request_id": "req_abc123xyz"
 }
@@ -2173,7 +2175,7 @@ await attachConsumer(streamId);
 
 // GOOD: Check state first
 const stream = await fetch(`/v2/streams/${streamId}`);
-if (stream.state !== 'LIVE') {
+if (stream.state !== 'live') {
   await startStream(deviceId);
 }
 await attachConsumer(streamId);

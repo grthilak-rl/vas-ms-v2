@@ -41,6 +41,8 @@ EXEMPT_PATHS = [
     "/openapi.json",
     "/redoc",
     "/v2/auth/token",  # Allow JWT token requests without API key
+    "/v2/auth/token/refresh",  # Refresh token serves as credential
+    "/v2/auth/token/revoke",  # Revoke doesn't need API key
     "/v2/auth/clients",  # Allow client creation (for initial setup)
 ]
 

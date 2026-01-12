@@ -66,8 +66,15 @@ async def attach_consumer(
 
         if stream.state != StreamState.LIVE:
             raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Stream is not live (current state: {stream.state.value}). Cannot attach consumer."
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "error": "STREAM_NOT_LIVE",
+                    "error_description": f"Cannot attach consumer: stream is not in LIVE state",
+                    "stream_id": str(stream_id),
+                    "current_state": stream.state.value,
+                    "required_state": "live",
+                    "retry_after_seconds": 2
+                }
             )
 
         # 2. Verify stream has an active producer
@@ -79,14 +86,40 @@ async def attach_consumer(
         producer = producer_result.scalar_one_or_none()
 
         if not producer:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Stream has no active producer. Cannot attach consumer."
-            )
+            # Check if there's a producer in any state (still initializing)
+            any_producer_query = select(Producer).where(Producer.stream_id == stream_id)
+            any_producer_result = await db.execute(any_producer_query)
+            any_producer = any_producer_result.scalar_one_or_none()
+
+            if any_producer and any_producer.state != ProducerState.ACTIVE:
+                # Producer exists but not yet active - suggest retry
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail={
+                        "error": "PRODUCER_NOT_READY",
+                        "error_description": f"Producer is initializing (state: {any_producer.state.value}). Retry after a short delay.",
+                        "stream_id": str(stream_id),
+                        "producer_state": any_producer.state.value,
+                        "retry_after_seconds": 2
+                    }
+                )
+            else:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail={
+                        "error": "NO_PRODUCER",
+                        "error_description": "Stream has no producer. The stream may not be fully started.",
+                        "stream_id": str(stream_id),
+                        "retry_after_seconds": 5
+                    }
+                )
+
+        # Use camera_id as room_id (MediaSoup router is created per device, not per stream)
+        room_id = str(stream.camera_id)
 
         logger.info(
             f"Attaching consumer for client {request.client_id} to stream {stream_id} "
-            f"(producer: {producer.mediasoup_producer_id})"
+            f"(producer: {producer.mediasoup_producer_id}, room: {room_id})"
         )
 
         # 3. Create WebRTC transport for consumer
@@ -94,7 +127,7 @@ async def attach_consumer(
             await mediasoup_client.connect()
 
             transport_info = await mediasoup_client.create_webrtc_transport(
-                room_id=str(stream_id)
+                room_id=room_id
             )
 
             logger.info(f"Created WebRTC transport: {transport_info['id']}")
@@ -132,12 +165,7 @@ async def attach_consumer(
             client_id=request.client_id,
             mediasoup_consumer_id=consumer_info["id"],
             mediasoup_transport_id=transport_info["id"],
-            state=ConsumerState.CONNECTING,
-            extra_metadata={
-                "producer_id": producer.mediasoup_producer_id,
-                "created_by": current_user["client_id"],
-                "rtp_kind": consumer_info.get("kind", "video")
-            }
+            state=ConsumerState.CONNECTING
         )
 
         db.add(new_consumer)
@@ -427,8 +455,7 @@ async def list_consumers(
                 "created_at": c.created_at.isoformat(),
                 "last_seen_at": c.last_seen_at.isoformat() if c.last_seen_at else None,
                 "closed_at": c.closed_at.isoformat() if c.closed_at else None,
-                "mediasoup_consumer_id": c.mediasoup_consumer_id,
-                "metadata": c.extra_metadata
+                "mediasoup_consumer_id": c.mediasoup_consumer_id
             }
             for c in consumers
         ]

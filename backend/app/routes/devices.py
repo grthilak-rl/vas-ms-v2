@@ -13,6 +13,7 @@ from uuid import UUID
 from database import get_db
 from app.models import Device
 from app.models.stream import Stream, StreamState
+from app.models.producer import Producer, ProducerState
 from app.schemas.device import DeviceCreate, DeviceUpdate, DeviceResponse
 
 router = APIRouter(prefix="/api/v1/devices", tags=["devices"])
@@ -119,8 +120,46 @@ async def start_device_stream(
             try:
                 existing_producers = await mediasoup_client.get_producers(room_id)
                 if existing_producers:
+                    # Query for existing V2 Stream record
+                    v2_stream_query = select(Stream).where(Stream.camera_id == device_id)
+                    v2_stream_result = await db.execute(v2_stream_query)
+                    v2_stream = v2_stream_result.scalar_one_or_none()
+
+                    # Ensure Producer database record exists for reconnecting streams
+                    if v2_stream:
+                        producer_query = select(Producer).where(
+                            Producer.stream_id == v2_stream.id,
+                            Producer.state == ProducerState.ACTIVE
+                        )
+                        producer_result = await db.execute(producer_query)
+                        active_producer = producer_result.scalar_one_or_none()
+
+                        if not active_producer and existing_producers:
+                            # Create missing Producer record
+                            logger.info(f"Creating missing Producer record for reconnecting stream {v2_stream.id}")
+                            new_producer = Producer(
+                                stream_id=v2_stream.id,
+                                mediasoup_producer_id=existing_producers[-1],
+                                mediasoup_transport_id=stream_info.get("transport_id", "unknown"),
+                                mediasoup_router_id=room_id,
+                                ssrc=stream_info.get("ssrc", 0),
+                                rtp_parameters={
+                                    "codecs": [{
+                                        "mimeType": "video/H264",
+                                        "clockRate": 90000,
+                                        "payloadType": 96,
+                                        "parameters": {"packetization-mode": 1, "profile-level-id": "42e01f"}
+                                    }],
+                                    "encodings": [{"ssrc": stream_info.get("ssrc", 0)}]
+                                },
+                                state=ProducerState.ACTIVE
+                            )
+                            db.add(new_producer)
+                            await db.commit()
+                            logger.info(f"Created Producer record for reconnecting stream")
+
                     # Return info about existing stream
-                    return {
+                    response = {
                         "status": "success",
                         "device_id": str(device_id),
                         "room_id": room_id,
@@ -135,6 +174,12 @@ async def start_device_stream(
                         },
                         "reconnect": True  # Flag indicating this was a reconnect, not a new stream
                     }
+
+                    # Include v2_stream_id if V2 Stream record exists
+                    if v2_stream:
+                        response["v2_stream_id"] = str(v2_stream.id)
+
+                    return response
             except Exception as e:
                 logger.warning(f"Error getting existing producers, will restart stream: {e}")
                 # If we can't get producer info, fall through to restart the stream
@@ -308,6 +353,38 @@ async def start_device_stream(
             db.add(v2_stream)
             logger.info(f"Created V2 Stream for device {device_id}")
 
+        # Create Producer database record for consumer attachment support
+        # First, close any existing producers for this stream
+        existing_producers_query = select(Producer).where(
+            Producer.stream_id == v2_stream.id,
+            Producer.state != ProducerState.CLOSED
+        )
+        existing_producers_result = await db.execute(existing_producers_query)
+        for old_producer in existing_producers_result.scalars().all():
+            old_producer.state = ProducerState.CLOSED
+            logger.info(f"Closed existing producer record {old_producer.id}")
+
+        # Create new Producer record with ACTIVE state
+        new_producer = Producer(
+            stream_id=v2_stream.id,
+            mediasoup_producer_id=video_producer["id"],
+            mediasoup_transport_id=transport_id,
+            mediasoup_router_id=room_id,  # Using room_id as router_id
+            ssrc=detected_ssrc,
+            rtp_parameters={
+                "codecs": [{
+                    "mimeType": "video/H264",
+                    "clockRate": 90000,
+                    "payloadType": 96,
+                    "parameters": {"packetization-mode": 1, "profile-level-id": "42e01f"}
+                }],
+                "encodings": [{"ssrc": detected_ssrc}]
+            },
+            state=ProducerState.ACTIVE
+        )
+        db.add(new_producer)
+        logger.info(f"Created Producer record {new_producer.id} with ACTIVE state for stream {v2_stream.id}")
+
         await db.commit()
 
         return {
@@ -435,6 +512,16 @@ async def stop_device_stream(
             if v2_stream:
                 v2_stream.state = StreamState.STOPPED
                 logger.info(f"Updated V2 Stream {v2_stream.id} to STOPPED state")
+
+                # Close all active producers for this stream
+                producers_query = select(Producer).where(
+                    Producer.stream_id == v2_stream.id,
+                    Producer.state != ProducerState.CLOSED
+                )
+                producers_result = await db.execute(producers_query)
+                for producer in producers_result.scalars().all():
+                    producer.state = ProducerState.CLOSED
+                    logger.info(f"Closed Producer record {producer.id}")
 
             await db.commit()
 

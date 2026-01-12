@@ -62,7 +62,7 @@ class Consumer(Base):
         DateTime(timezone=True),
         nullable=False,
         server_default=func.now(),
-        onupdate="now()"
+        onupdate=func.now()
     )
     closed_at = Column(DateTime(timezone=True), nullable=True)
 

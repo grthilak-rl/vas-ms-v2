@@ -83,11 +83,9 @@ class ConsumerAttachResponse(BaseModel):
 
 class ConsumerConnectRequest(BaseModel):
     """Request to complete DTLS handshake."""
-    consumer_id: UUID4 = Field(..., description="Consumer UUID")
     dtls_parameters: Dict[str, Any] = Field(..., description="Client DTLS parameters")
 
 
 class ICECandidateRequest(BaseModel):
     """Request to send ICE candidate."""
-    consumer_id: UUID4 = Field(..., description="Consumer UUID")
     candidate: Dict[str, Any] = Field(..., description="ICE candidate")

@@ -73,7 +73,16 @@
       "Bash(TOKEN=\"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJ2YXMtcG9ydGFsIiwic2NvcGVzIjpbInN0cmVhbXM6cmVhZCIsInN0cmVhbXM6d3JpdGUiLCJzdHJlYW1zOmNvbnN1bWUiLCJib29rbWFya3M6cmVhZCIsImJvb2ttYXJrczp3cml0ZSIsInNuYXBzaG90czpyZWFkIiwic25hcHNob3RzOndyaXRlIl0sInR5cGUiOiJhY2Nlc3MiLCJpYXQiOjE3NjgxMjE1NjQsImV4cCI6MTc2ODEyNTE2NH0.h3kfESBXTIP33mP_lewaV_JA41Gn81VglAkA_kjvxnQ\")",
       "Bash(DEVICE_ID=\"10d9944d-2cde-433c-83eb-7d6002512f83\":*)",
       "Bash(# Check if HLS segments are being created \\(proves FFmpeg is working\\) docker exec vas-v2-backend ls -la /recordings/hot/10d9944d-2cde-433c-83eb-7d6002512f83/)",
-      "Bash(fuser:*)"
+      "Bash(fuser:*)",
+      "Bash(git remote set-url:*)",
+      "Bash(git push:*)",
+      "Bash(git add:*)",
+      "Bash(git commit -m \"$\\(cat <<''EOF''\ndocs: Address API documentation gaps in VAS-MS-V2 Integration Guide\n\n- Add POST /v2/auth/token/refresh endpoint documentation with examples\n- Add POST /v2/auth/token/revoke endpoint for logout functionality\n- Add comprehensive Stream State Machine section \\(Section 4\\) with:\n  - State definitions and descriptions\n  - State transition diagram\n  - Valid state transitions table\n  - State-based API behavior matrix\n  - Client-side state handling code example\n- Add V1 API security notice and migration path guidance\n- Standardize error response format with:\n  - Consistent error schema \\(error, error_description, status_code, details\\)\n  - Examples for validation, auth, stream, and conflict errors\n  - Programmatic error handling code example\n- Add Async Processing section \\(Section 8\\) for bookmarks/snapshots:\n  - Processing states \\(processing, ready, failed\\)\n  - Async flow diagram\n  - Expected processing times table\n  - Polling with exponential backoff implementation\n  - Failure handling patterns\n  - Best practices for async resource creation\n- Add OpenAPI Specification appendix \\(Appendix E\\) with:\n  - Specification endpoints\n  - Code generation examples\n  - Contract testing guidance\n  - Key schema definitions\n- Add Complete Error Code Reference appendix \\(Appendix F\\)\n- Update version to 2.1 and fix section numbering\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\nEOF\n\\)\")",
+      "Bash(else)",
+      "Bash(fi)",
+      "Bash(docker compose logs:*)",
+      "Bash(docker compose:*)",
+      "Bash(TEST_CLIENT_SECRET=test-secret API_URL=http://localhost:8085 python:*)"
     ],
     "deny": [],
     "ask": []

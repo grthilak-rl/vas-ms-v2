@@ -27,6 +27,9 @@ WORKDIR /app
 
 ENV NODE_ENV=production
 
+# Install wget for health checks
+RUN apk add --no-cache wget
+
 RUN addgroup --system --gid 1001 nodejs
 RUN adduser --system --uid 1001 nextjs
 
@@ -40,5 +43,7 @@ USER nextjs
 EXPOSE 3000
 
 ENV PORT=3000
+# Bind to all interfaces so health checks can use localhost
+ENV HOSTNAME=0.0.0.0
 
 CMD ["node", "server.js"]

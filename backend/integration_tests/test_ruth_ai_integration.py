@@ -142,12 +142,15 @@ class RuthAIIntegrationTest:
             self.log_error(f"Stream discovery failed: {e}")
             raise
 
-    async def consume_stream(self, stream_id: str) -> str:
+    async def consume_stream(self, stream_id: str, max_retries: int = 5) -> str:
         """
         Step 3: Attach consumer to stream (WebRTC signaling)
 
         This demonstrates that Ruth-AI can consume the video stream
         for real-time AI inference.
+
+        Implements retry logic for 409 Conflict responses when the producer
+        is still initializing after stream reaches LIVE state.
         """
         self.log_step(3, 7, "Attaching WebRTC consumer to stream")
 
@@ -167,27 +170,49 @@ class RuthAIIntegrationTest:
                 "headerExtensions": []
             }
 
-            response = await self.client.post(
-                f"{self.api_url}/api/v2/streams/{stream_id}/consume",
-                headers={"Authorization": f"Bearer {self.access_token}"},
-                json={
-                    "client_id": "ruth-ai-simulator",
-                    "rtp_capabilities": rtp_capabilities
-                }
-            )
+            # Retry loop for handling 409 Conflict (producer not ready)
+            for attempt in range(1, max_retries + 1):
+                response = await self.client.post(
+                    f"{self.api_url}/api/v2/streams/{stream_id}/consume",
+                    headers={"Authorization": f"Bearer {self.access_token}"},
+                    json={
+                        "client_id": "ruth-ai-simulator",
+                        "rtp_capabilities": rtp_capabilities
+                    }
+                )
 
-            if response.status_code not in [200, 201]:
-                raise Exception(f"Failed to attach consumer: {response.text}")
+                if response.status_code in [200, 201]:
+                    # Success!
+                    data = response.json()
+                    consumer_id = data["consumer_id"]
 
-            data = response.json()
-            consumer_id = data["consumer_id"]
+                    self.log_success(f"Consumer attached successfully")
+                    self.log_info(f"Consumer ID: {consumer_id}")
+                    self.log_info(f"Transport ID: {data.get('transport', {}).get('id', 'N/A')}")
+                    self.log_info(f"Stream can now be processed by Ruth-AI")
 
-            self.log_success(f"Consumer attached successfully")
-            self.log_info(f"Consumer ID: {consumer_id}")
-            self.log_info(f"Transport ID: {data.get('transport', {}).get('id', 'N/A')}")
-            self.log_info(f"Stream can now be processed by Ruth-AI")
+                    return consumer_id
 
-            return consumer_id
+                elif response.status_code == 409:
+                    # Producer not ready - follow retry_after_seconds hint
+                    try:
+                        error_detail = response.json().get("detail", {})
+                        retry_after = error_detail.get("retry_after_seconds", 2)
+                        error_type = error_detail.get("error", "UNKNOWN")
+                        self.log_info(f"Attempt {attempt}/{max_retries}: {error_type}, retrying in {retry_after}s...")
+                    except:
+                        retry_after = 2
+                        self.log_info(f"Attempt {attempt}/{max_retries}: Producer not ready, retrying in {retry_after}s...")
+
+                    if attempt < max_retries:
+                        await asyncio.sleep(retry_after)
+                    else:
+                        raise Exception(f"Failed to attach consumer after {max_retries} attempts: {response.text}")
+                else:
+                    raise Exception(f"Failed to attach consumer: {response.text}")
+
+            # Should not reach here, but just in case
+            raise Exception("Max retries exceeded")
 
         except Exception as e:
             self.log_error(f"Consumer attachment failed: {e}")

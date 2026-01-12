@@ -106,5 +106,7 @@ class BookmarkListResponse(BaseModel):
 class BookmarkUpdate(BaseModel):
     """Request to update bookmark."""
     label: Optional[str] = Field(default=None, max_length=255)
+    event_type: Optional[str] = Field(default=None, description="Event type", max_length=50)
+    confidence: Optional[float] = Field(default=None, description="AI confidence (0.0-1.0)", ge=0.0, le=1.0)
     tags: Optional[List[str]] = Field(default=None)
     metadata: Optional[Dict[str, Any]] = Field(default=None)

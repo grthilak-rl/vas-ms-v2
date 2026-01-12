@@ -78,10 +78,13 @@ async def list_streams(
         # Build response objects
         stream_responses = []
         for stream in streams:
-            # Get producer info
-            producer_query = select(Producer).where(Producer.stream_id == stream.id)
+            # Get active producer info (filter by ACTIVE state to avoid multiple rows)
+            producer_query = select(Producer).where(
+                Producer.stream_id == stream.id,
+                Producer.state == ProducerState.ACTIVE
+            )
             producer_result = await db.execute(producer_query)
-            producer = producer_result.scalar_one_or_none()
+            producer = producer_result.scalars().first()
 
             producer_info = None
             if producer:
@@ -89,7 +92,8 @@ async def list_streams(
                     id=producer.id,
                     mediasoup_id=producer.mediasoup_producer_id,
                     state=producer.state.value,
-                    ssrc=producer.ssrc
+                    ssrc=producer.ssrc,
+                    created_at=producer.created_at
                 )
 
             # Count consumers
@@ -245,10 +249,13 @@ async def get_stream(
                 detail=f"Stream {stream_id} not found"
             )
 
-        # Get producer info
-        producer_query = select(Producer).where(Producer.stream_id == stream.id)
+        # Get active producer info (filter by ACTIVE state to avoid multiple rows)
+        producer_query = select(Producer).where(
+            Producer.stream_id == stream.id,
+            Producer.state == ProducerState.ACTIVE
+        )
         producer_result = await db.execute(producer_query)
-        producer = producer_result.scalar_one_or_none()
+        producer = producer_result.scalars().first()
 
         producer_info = None
         if producer:
@@ -256,7 +263,8 @@ async def get_stream(
                 id=producer.id,
                 mediasoup_id=producer.mediasoup_producer_id,
                 state=producer.state.value,
-                ssrc=producer.ssrc
+                ssrc=producer.ssrc,
+                created_at=producer.created_at
             )
 
         # Count consumers
@@ -392,35 +400,63 @@ async def get_stream_health(
             except (ValueError, TypeError):
                 pass
 
-        # Get producer metrics
-        producer_query = select(Producer).where(Producer.stream_id == stream.id)
+        # Get producer metrics (filter by ACTIVE state to avoid multiple rows error)
+        producer_query = select(Producer).where(
+            Producer.stream_id == stream.id,
+            Producer.state == ProducerState.ACTIVE
+        )
         producer_result = await db.execute(producer_query)
-        producer = producer_result.scalar_one_or_none()
+        producer = producer_result.scalars().first()
 
-        # TODO: Get real-time metrics from StreamManager/MediaSoup
-        metrics = {
-            "bitrate_kbps": 2500,  # Placeholder
-            "fps": 30,  # Placeholder
-            "packet_loss": 0.0,  # Placeholder
-            "jitter_ms": 2.5  # Placeholder
+        # Build producer health info
+        producer_info = None
+        if producer:
+            producer_info = {
+                "id": str(producer.id),
+                "mediasoup_id": producer.mediasoup_producer_id,
+                "state": producer.state.value,
+                "bitrate_kbps": 2500,  # Placeholder - TODO: get from MediaSoup
+                "fps": 30,  # Placeholder
+                "packet_loss": 0.0,  # Placeholder
+            }
+
+        # Get consumer statistics
+        from app.models.consumer import Consumer, ConsumerState
+        consumer_query = select(Consumer).where(Consumer.stream_id == stream.id)
+        consumer_result = await db.execute(consumer_query)
+        consumers = consumer_result.scalars().all()
+
+        active_consumers = sum(1 for c in consumers if c.state in [ConsumerState.CONNECTING, ConsumerState.CONNECTED])
+        consumers_info = {
+            "active": active_consumers,
+            "total": len(consumers),
+            "connecting": sum(1 for c in consumers if c.state == ConsumerState.CONNECTING),
+            "connected": sum(1 for c in consumers if c.state == ConsumerState.CONNECTED),
         }
 
+        # Determine health status
         is_healthy = (
             stream.state == StreamState.LIVE and
             producer is not None and
             producer.state == ProducerState.ACTIVE
         )
 
-        logger.info(f"Health check for stream {stream_id}: {is_healthy}")
+        if is_healthy:
+            health_status = "healthy"
+        elif stream.state == StreamState.LIVE:
+            health_status = "degraded"
+        else:
+            health_status = "unhealthy"
+
+        logger.info(f"Health check for stream {stream_id}: {health_status}")
 
         return StreamHealthResponse(
-            stream_id=stream.id,
+            status=health_status,
             state=stream.state.value,
-            is_healthy=is_healthy,
-            uptime_seconds=uptime_seconds,
-            metrics=metrics,
-            last_error=stream.stream_metadata.get("last_error"),
-            checked_at=datetime.now(timezone.utc)
+            producer=producer_info,
+            consumers=consumers_info,
+            ffmpeg={"status": "running" if stream.state == StreamState.LIVE else "stopped"},
+            recording=None  # TODO: implement recording status
         )
 
     except HTTPException:

@@ -111,14 +111,27 @@ async def get_stream_health(
             raise HTTPException(status_code=404, detail=f"Stream {stream_id} not found")
 
         # Get FFmpeg ingestion health
-        ffmpeg_health = await stream_ingestion_service.get_ingestion_health(stream_id)
+        ffmpeg_health = None
+        try:
+            ffmpeg_health = await stream_ingestion_service.get_ingestion_health(stream_id)
+        except Exception as e:
+            logger.warning(f"Could not get FFmpeg health: {str(e)}")
+            ffmpeg_health = {"status": "unknown", "message": str(e)}
 
-        # Get producer health (if exists)
+        # Get producer health - query by stream_id, not producer_id attribute
         producer_health = None
-        if stream.producer_id:
+        from app.models.producer import Producer, ProducerState
+        producer_query = select(Producer).where(
+            Producer.stream_id == stream_id,
+            Producer.state == ProducerState.ACTIVE
+        )
+        producer_result = await db.execute(producer_query)
+        producer = producer_result.scalar_one_or_none()
+
+        if producer:
             try:
                 producer_health = await producer_service.get_producer_stats(
-                    stream.producer_id,
+                    producer.id,
                     db
                 )
             except Exception as e:
@@ -126,7 +139,23 @@ async def get_stream_health(
                 producer_health = {"status": "error", "message": str(e)}
 
         # Get consumer statistics
-        consumer_stats = await consumer_service.get_stream_consumer_stats(stream_id, db)
+        consumer_stats = None
+        try:
+            consumer_stats = await consumer_service.get_stream_consumer_stats(stream_id, db)
+        except Exception as e:
+            logger.warning(f"Could not get consumer stats: {str(e)}")
+            consumer_stats = {"status": "unknown", "message": str(e)}
+
+        # Calculate uptime from stream_metadata (started_at is stored there, not as direct attribute)
+        uptime_seconds = None
+        started_at_str = stream.stream_metadata.get('started_at') if stream.stream_metadata else None
+        if started_at_str:
+            try:
+                from datetime import datetime, timezone
+                started_at = datetime.fromisoformat(started_at_str.replace('Z', '+00:00'))
+                uptime_seconds = int((datetime.now(timezone.utc) - started_at).total_seconds())
+            except (ValueError, TypeError) as e:
+                logger.warning(f"Could not calculate uptime: {str(e)}")
 
         return {
             "stream_id": str(stream_id),
@@ -136,10 +165,7 @@ async def get_stream_health(
             "ffmpeg": ffmpeg_health,
             "producer": producer_health,
             "consumers": consumer_stats,
-            "uptime_seconds": (
-                int((func.now() - stream.started_at).total_seconds())
-                if stream.started_at else None
-            )
+            "uptime_seconds": uptime_seconds
         }
 
     except HTTPException:
