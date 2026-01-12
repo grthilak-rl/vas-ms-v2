@@ -1,8 +1,9 @@
 # VAS-MS-V2 Integration Guide
 
-**Version:** 2.0
+**Version:** 2.1
 **Last Updated:** January 2026
 **Audience:** Ruth AI Developers, Third-Party Integrators
+**OpenAPI Spec:** `/v2/openapi.json` (see [Appendix E](#appendix-e-openapi-specification))
 
 ---
 
@@ -11,11 +12,13 @@
 1. [System Overview](#1-system-overview)
 2. [Authentication Model](#2-authentication-model)
 3. [API Catalog](#3-api-catalog)
-4. [WebRTC Flow - Step by Step](#4-webrtc-flow---step-by-step)
-5. [Ruth AI Integration Patterns](#5-ruth-ai-integration-patterns)
-6. [Error Handling & Contracts](#6-error-handling--contracts)
-7. [What Ruth AI MUST NOT Do](#7-what-ruth-ai-must-not-do)
-8. [Final Summary](#8-final-summary)
+4. [Stream State Machine](#4-stream-state-machine)
+5. [WebRTC Flow - Step by Step](#5-webrtc-flow---step-by-step)
+6. [Ruth AI Integration Patterns](#6-ruth-ai-integration-patterns)
+7. [Error Handling & Contracts](#7-error-handling--contracts)
+8. [Async Processing (Bookmarks & Snapshots)](#8-async-processing-bookmarks--snapshots)
+9. [What Ruth AI MUST NOT Do](#9-what-ruth-ai-must-not-do)
+10. [Final Summary](#10-final-summary)
 
 ---
 
@@ -216,13 +219,88 @@ Content-Type: application/json
 **Error Response (401 Unauthorized):**
 ```json
 {
-  "detail": "Invalid client credentials"
+  "error": "invalid_credentials",
+  "error_description": "Invalid client credentials",
+  "status_code": 401
+}
+```
+
+---
+
+#### POST /v2/auth/token/refresh
+**Refresh an access token using a refresh token**
+
+Use this endpoint to obtain a new access token before the current one expires. Best practice is to refresh when ~80% of the access token TTL has elapsed (e.g., at ~48 minutes for a 1-hour token).
+
+```http
+POST /v2/auth/token/refresh
+Content-Type: application/json
+
+{
+  "refresh_token": "def456uvw..."
+}
+```
+
+**Response (200 OK):**
+```json
+{
+  "access_token": "eyJhbGciOiJIUzI1NiIs...",
+  "token_type": "Bearer",
+  "expires_in": 3600,
+  "scopes": ["streams:read", "streams:consume", "bookmarks:write", "snapshots:write"]
+}
+```
+
+> **Note:** The refresh token itself is not rotated on refresh. It remains valid until its 7-day expiry.
+
+**Error Response (401 Unauthorized - Expired/Invalid Refresh Token):**
+```json
+{
+  "error": "invalid_refresh_token",
+  "error_description": "Refresh token is expired or invalid",
+  "status_code": 401
+}
+```
+
+**When to Re-authenticate:**
+- If refresh token is expired (after 7 days)
+- If refresh token is revoked
+- If client credentials have changed
+
+In these cases, call `POST /v2/auth/token` with `client_id` and `client_secret` to obtain new tokens.
+
+---
+
+#### POST /v2/auth/token/revoke
+**Revoke a refresh token (logout)**
+
+```http
+POST /v2/auth/token/revoke
+Content-Type: application/json
+
+{
+  "refresh_token": "def456uvw..."
+}
+```
+
+**Response (200 OK):**
+```json
+{
+  "status": "revoked",
+  "message": "Token successfully revoked"
 }
 ```
 
 ---
 
 ### 3.2 Device APIs (V1 - Legacy)
+
+> **SECURITY NOTICE:** V1 Device APIs currently use API Key authentication (`X-API-Key` header) for backwards compatibility. These endpoints are scheduled for deprecation. New integrations should use V2 APIs with JWT authentication where possible.
+>
+> **Migration Path:**
+> - Use `POST /api/v1/devices/{id}/start-stream` to start streams (returns `v2_stream_id`)
+> - Use V2 Stream APIs (`/v2/streams/*`) for all subsequent operations
+> - V2 Device management APIs are planned for a future release
 
 #### GET /api/v1/devices
 **List all devices**
@@ -1059,9 +1137,131 @@ Authorization: Bearer <access_token>
 
 ---
 
-## 4. WebRTC Flow - Step by Step
+## 4. Stream State Machine
 
-### 4.1 Complete Connection Sequence
+### 4.1 Stream States
+
+VAS-MS-V2 manages stream lifecycle through a finite state machine. Understanding these states is critical for proper integration.
+
+| State | Description | Can Attach Consumer? | Terminal? |
+|-------|-------------|---------------------|-----------|
+| `INITIALIZING` | Stream record created, setup in progress | No | No |
+| `READY` | SSRC captured, producer created, waiting for media | No | No |
+| `LIVE` | FFmpeg running, media actively flowing | **Yes** | No |
+| `ERROR` | Failure occurred (recoverable) | No | No |
+| `STOPPED` | Manually stopped by user/API | No | No |
+| `CLOSED` | Cleanup complete, resources released | No | **Yes** |
+
+### 4.2 State Transition Diagram
+
+```
+                              ┌─────────────────────────────────────────┐
+                              │           STREAM STATE MACHINE          │
+                              └─────────────────────────────────────────┘
+
+    ┌──────────────┐     SSRC captured      ┌──────────────┐     FFmpeg started     ┌──────────────┐
+    │              │ ───────────────────────>│              │ ───────────────────────>│              │
+    │ INITIALIZING │                         │    READY     │                         │     LIVE     │
+    │              │<───────────────────────│              │<───────────────────────│              │
+    └──────────────┘     retry on failure    └──────────────┘     reconnect          └──────────────┘
+           │                                        │                                       │
+           │                                        │                                       │
+           │ setup failed                           │ producer failed                       │ stop requested
+           │                                        │                                       │
+           ▼                                        ▼                                       ▼
+    ┌──────────────┐                         ┌──────────────┐                        ┌──────────────┐
+    │              │                         │              │                        │              │
+    │    ERROR     │◄────────────────────────│    ERROR     │◄───────────────────────│   STOPPED    │
+    │              │                         │              │                        │              │
+    └──────────────┘                         └──────────────┘                        └──────────────┘
+           │                                        │                                       │
+           │ restart                                │ restart                               │ cleanup
+           │ attempted                              │ attempted                             │ complete
+           ▼                                        ▼                                       ▼
+    ┌──────────────┐                         ┌──────────────┐                        ┌──────────────┐
+    │              │                         │              │                        │              │
+    │ INITIALIZING │                         │ INITIALIZING │                        │    CLOSED    │
+    │              │                         │              │                        │  (terminal)  │
+    └──────────────┘                         └──────────────┘                        └──────────────┘
+```
+
+### 4.3 Valid State Transitions
+
+| From State | To State | Trigger | Notes |
+|------------|----------|---------|-------|
+| `INITIALIZING` | `READY` | SSRC captured successfully | Producer created in MediaSoup |
+| `INITIALIZING` | `ERROR` | SSRC capture failed | RTSP connection issue or no video |
+| `READY` | `LIVE` | FFmpeg started, media flowing | Consumers can now attach |
+| `READY` | `ERROR` | FFmpeg failed to start | Check RTSP URL and camera status |
+| `LIVE` | `STOPPED` | `stop-stream` API called | Graceful shutdown |
+| `LIVE` | `ERROR` | FFmpeg crashed or RTSP disconnected | Automatic recovery attempted |
+| `ERROR` | `INITIALIZING` | Automatic retry or manual restart | Up to 3 automatic retries |
+| `ERROR` | `CLOSED` | Max retries exceeded or manual close | Terminal state |
+| `STOPPED` | `INITIALIZING` | `start-stream` API called | Restart stream |
+| `STOPPED` | `CLOSED` | Cleanup timeout (5 min) or explicit close | Terminal state |
+| `*` | `CLOSED` | Stream deleted via API | Resources released |
+
+### 4.4 State-Based API Behavior
+
+| API Endpoint | INITIALIZING | READY | LIVE | ERROR | STOPPED | CLOSED |
+|--------------|--------------|-------|------|-------|---------|--------|
+| `GET /v2/streams/{id}` | ✓ | ✓ | ✓ | ✓ | ✓ | 404 |
+| `POST /v2/streams/{id}/consume` | 409 | 409 | ✓ | 409 | 409 | 404 |
+| `GET /v2/streams/{id}/health` | ✓ | ✓ | ✓ | ✓ | ✓ | 404 |
+| `DELETE /v2/streams/{id}` | ✓ | ✓ | ✓ | ✓ | ✓ | 404 |
+| `POST /devices/{id}/stop-stream` | ✓ | ✓ | ✓ | ✓ | 200 (no-op) | 404 |
+
+### 4.5 Handling State in Client Code
+
+```javascript
+async function ensureStreamReady(streamId) {
+  const maxWait = 30000; // 30 seconds
+  const pollInterval = 1000; // 1 second
+  const startTime = Date.now();
+
+  while (Date.now() - startTime < maxWait) {
+    const response = await fetch(`/v2/streams/${streamId}`, {
+      headers: { 'Authorization': `Bearer ${accessToken}` }
+    });
+
+    if (!response.ok) {
+      throw new Error(`Stream not found: ${response.status}`);
+    }
+
+    const stream = await response.json();
+
+    switch (stream.state) {
+      case 'LIVE':
+        return stream; // Ready to consume
+
+      case 'INITIALIZING':
+      case 'READY':
+        await sleep(pollInterval); // Wait and retry
+        break;
+
+      case 'ERROR':
+        throw new Error(`Stream error: ${stream.last_error}`);
+
+      case 'STOPPED':
+        throw new Error('Stream is stopped');
+
+      case 'CLOSED':
+        throw new Error('Stream is closed');
+
+      default:
+        throw new Error(`Unknown state: ${stream.state}`);
+    }
+  }
+
+  throw new Error('Timeout waiting for stream to become LIVE');
+}
+```
+
+---
+
+## 5. WebRTC Flow - Step by Step
+
+### 5.1 Complete Connection Sequence
 
 ```
 ┌─────────────┐          ┌─────────────┐          ┌─────────────┐
@@ -1133,7 +1333,7 @@ Authorization: Bearer <access_token>
        │                        │                        │
 ```
 
-### 4.2 Step-by-Step Instructions
+### 5.2 Step-by-Step Instructions
 
 #### Step 1: Discover Device
 
@@ -1292,7 +1492,7 @@ consumer.close();
 transport.close();
 ```
 
-### 4.3 Signaling Direction Summary
+### 5.3 Signaling Direction Summary
 
 | Direction | Data | Endpoint |
 |-----------|------|----------|
@@ -1306,7 +1506,7 @@ transport.close();
 | Server → Client | Connection confirmed | Response |
 | Server → Client | **Media stream** | WebRTC (direct) |
 
-### 4.4 State Ownership
+### 5.4 State Ownership
 
 | State | Owner | Persistence |
 |-------|-------|-------------|
@@ -1317,7 +1517,7 @@ transport.close();
 | MediaStream / Tracks | Ruth AI | Memory (client-side) |
 | mediasoup Device | Ruth AI | Memory (client-side) |
 
-### 4.5 Retry and Timeout Expectations
+### 5.5 Retry and Timeout Expectations
 
 | Operation | Timeout | Retry Strategy |
 |-----------|---------|----------------|
@@ -1330,9 +1530,9 @@ transport.close();
 
 ---
 
-## 5. Ruth AI Integration Patterns
+## 6. Ruth AI Integration Patterns
 
-### 5.1 One Stream Per Device vs Shared Streams
+### 6.1 One Stream Per Device vs Shared Streams
 
 **VAS-MS-V2 uses a shared stream model:**
 
@@ -1370,7 +1570,7 @@ if (status.streaming.active) {
 }
 ```
 
-### 5.2 Avoiding Duplicate Stream Starts
+### 6.2 Avoiding Duplicate Stream Starts
 
 **VAS-MS-V2 handles this automatically:**
 - If stream is already active, `start-stream` returns existing stream info
@@ -1407,7 +1607,7 @@ class StreamManager {
 }
 ```
 
-### 5.3 Handling Multiple Viewers
+### 6.3 Handling Multiple Viewers
 
 **Scenario:** Multiple Ruth AI instances or UI panels viewing the same stream.
 
@@ -1428,7 +1628,7 @@ const consumeResponse = await fetch(`/v2/streams/${streamId}/consume`, {
 });
 ```
 
-### 5.4 AI Pipeline Consumption
+### 6.4 AI Pipeline Consumption
 
 **For AI processing, Ruth AI can:**
 
@@ -1465,7 +1665,7 @@ const playlist = await fetch(`/v2/streams/${streamId}/hls/playlist.m3u8`);
 // Download and process .ts segments
 ```
 
-### 5.5 Failure Handling
+### 6.5 Failure Handling
 
 #### RTSP Camera Offline
 
@@ -1525,9 +1725,9 @@ async function handleConnectionFailure(error) {
 
 ---
 
-## 6. Error Handling & Contracts
+## 7. Error Handling & Contracts
 
-### 6.1 HTTP Status Code Semantics
+### 7.1 HTTP Status Code Semantics
 
 | Code | Meaning | Ruth AI Action |
 |------|---------|----------------|
@@ -1544,27 +1744,128 @@ async function handleConnectionFailure(error) {
 | `503 Service Unavailable` | MediaSoup down | Retry later |
 | `504 Gateway Timeout` | RTSP timeout | Check camera, retry later |
 
-### 6.2 Error Response Format
+### 7.2 Standardized Error Response Format
 
-**Standard error:**
+All VAS-MS-V2 API endpoints return errors in a consistent format to enable programmatic error handling.
+
+#### Standard Error Schema
+
 ```json
 {
-  "detail": "Human-readable error message"
+  "error": "ERROR_CODE",
+  "error_description": "Human-readable error message",
+  "status_code": 400,
+  "details": {
+    "field": "Additional context (optional)"
+  },
+  "request_id": "req_abc123xyz",
+  "timestamp": "2026-01-12T11:00:00Z"
 }
 ```
 
-**Detailed error (stream operations):**
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `error` | string | Yes | Machine-readable error code (SCREAMING_SNAKE_CASE) |
+| `error_description` | string | Yes | Human-readable message for display |
+| `status_code` | integer | Yes | HTTP status code (matches response status) |
+| `details` | object | No | Additional context (field errors, constraints, etc.) |
+| `request_id` | string | No | Unique request ID for debugging/support |
+| `timestamp` | string | No | ISO 8601 timestamp of error occurrence |
+
+#### Validation Error (400 Bad Request)
+
 ```json
 {
-  "detail": {
-    "error_code": "SSRC_CAPTURE_FAILED",
-    "message": "Failed to capture SSRC from RTSP source",
-    "detail": "Connection refused"
+  "error": "VALIDATION_ERROR",
+  "error_description": "Request validation failed",
+  "status_code": 400,
+  "details": {
+    "rtsp_url": "Invalid RTSP URL format",
+    "name": "Field is required"
+  },
+  "request_id": "req_abc123xyz"
+}
+```
+
+#### Authentication Error (401 Unauthorized)
+
+```json
+{
+  "error": "INVALID_TOKEN",
+  "error_description": "Access token is expired or invalid",
+  "status_code": 401,
+  "request_id": "req_abc123xyz"
+}
+```
+
+#### Stream Operation Error (502 Bad Gateway)
+
+```json
+{
+  "error": "SSRC_CAPTURE_FAILED",
+  "error_description": "Failed to capture SSRC from RTSP source",
+  "status_code": 502,
+  "details": {
+    "rtsp_url": "rtsp://192.168.1.100:554/stream1",
+    "timeout_seconds": 15,
+    "reason": "Connection refused"
+  },
+  "request_id": "req_abc123xyz"
+}
+```
+
+#### Conflict Error (409 Conflict)
+
+```json
+{
+  "error": "STREAM_NOT_LIVE",
+  "error_description": "Cannot attach consumer: stream is not in LIVE state",
+  "status_code": 409,
+  "details": {
+    "stream_id": "770e8400-e29b-41d4-a716-446655440002",
+    "current_state": "INITIALIZING",
+    "required_state": "LIVE"
+  },
+  "request_id": "req_abc123xyz"
+}
+```
+
+#### Parsing Errors Programmatically
+
+```javascript
+async function handleApiError(response) {
+  const error = await response.json();
+
+  switch (error.error) {
+    case 'INVALID_TOKEN':
+    case 'TOKEN_EXPIRED':
+      await refreshToken();
+      return { retry: true };
+
+    case 'STREAM_NOT_LIVE':
+      // Wait for stream to be ready
+      await waitForStreamLive(error.details.stream_id);
+      return { retry: true };
+
+    case 'SSRC_CAPTURE_FAILED':
+    case 'RTSP_CONNECTION_FAILED':
+      // Camera issue - notify user
+      showError(`Camera unavailable: ${error.error_description}`);
+      return { retry: false, userAction: true };
+
+    case 'VALIDATION_ERROR':
+      // Show field-specific errors
+      showValidationErrors(error.details);
+      return { retry: false };
+
+    default:
+      console.error(`Unhandled error: ${error.error}`, error);
+      return { retry: false };
   }
 }
 ```
 
-### 6.3 Error Codes Reference
+### 7.3 Error Codes Reference
 
 | Error Code | HTTP Status | Meaning |
 |------------|-------------|---------|
@@ -1577,7 +1878,7 @@ async function handleConnectionFailure(error) {
 | `STREAM_START_FAILED` | 500 | Generic stream start failure |
 | `STREAM_STOP_FAILED` | 500 | Generic stream stop failure |
 
-### 6.4 Retry Decision Matrix
+### 7.4 Retry Decision Matrix
 
 | Error Type | Retry? | Max Retries | Backoff |
 |------------|--------|-------------|---------|
@@ -1592,7 +1893,7 @@ async function handleConnectionFailure(error) {
 | WebRTC ICE Failure | Yes | 2 | 2s |
 | WebRTC DTLS Failure | Yes | 1 | 2s |
 
-### 6.5 Which Errors Require User Action
+### 7.5 Which Errors Require User Action
 
 | Error | Required Action |
 |-------|-----------------|
@@ -1602,7 +1903,7 @@ async function handleConnectionFailure(error) {
 | SSRC_CAPTURE_FAILED | Check if camera is producing video |
 | Repeated 502/503 | Check infrastructure status |
 
-### 6.6 Fatal Errors (Don't Retry)
+### 7.6 Fatal Errors (Don't Retry)
 
 - `403 Forbidden` - Missing permissions
 - `404 Not Found` - Resource deleted
@@ -1611,9 +1912,218 @@ async function handleConnectionFailure(error) {
 
 ---
 
-## 7. What Ruth AI MUST NOT Do
+## 8. Async Processing (Bookmarks & Snapshots)
 
-### 7.1 Anti-Patterns to Avoid
+### 8.1 Understanding Async Resource Creation
+
+When you create a **bookmark** or **snapshot**, the API returns immediately with a resource record, but the actual media file (video clip or image) is processed **asynchronously** in the background. This design allows:
+
+- Fast API response times (< 500ms)
+- Multiple concurrent capture requests
+- Graceful handling of processing backlogs
+
+### 8.2 Processing States
+
+| Status | Description | Media Available? |
+|--------|-------------|------------------|
+| `processing` | Resource created, media being generated | No |
+| `ready` | Processing complete, media available | **Yes** |
+| `failed` | Processing failed (see `error` field) | No |
+
+### 8.3 Async Flow Diagram
+
+```
+┌────────────────────────────────────────────────────────────────────────────┐
+│                    ASYNC BOOKMARK/SNAPSHOT CREATION                         │
+└────────────────────────────────────────────────────────────────────────────┘
+
+   Client                              VAS-MS-V2                    FFmpeg
+     │                                    │                            │
+     │ POST /streams/{id}/bookmarks       │                            │
+     │ ─────────────────────────────────> │                            │
+     │                                    │ Create DB record           │
+     │                                    │ (status=processing)        │
+     │                                    │                            │
+     │ 201 Created                        │                            │
+     │ { status: "processing" }           │                            │
+     │ <───────────────────────────────── │                            │
+     │                                    │                            │
+     │                                    │ Queue extraction job       │
+     │                                    │ ─────────────────────────> │
+     │                                    │                            │
+     │                                    │      [Extract video clip]  │
+     │                                    │                            │
+     │                                    │ Job complete               │
+     │                                    │ <───────────────────────── │
+     │                                    │                            │
+     │                                    │ Update DB record           │
+     │                                    │ (status=ready, video_url)  │
+     │                                    │                            │
+     │ GET /bookmarks/{id}                │                            │
+     │ ─────────────────────────────────> │                            │
+     │                                    │                            │
+     │ 200 OK                             │                            │
+     │ { status: "ready", video_url: ... }│                            │
+     │ <───────────────────────────────── │                            │
+     │                                    │                            │
+     │ GET /bookmarks/{id}/video          │                            │
+     │ ─────────────────────────────────> │                            │
+     │                                    │                            │
+     │ 200 OK (video/mp4)                 │                            │
+     │ <───────────────────────────────── │                            │
+     │                                    │                            │
+```
+
+### 8.4 Expected Processing Times
+
+| Resource Type | Source | Typical Processing Time |
+|---------------|--------|------------------------|
+| Snapshot (live) | Live stream | 1-3 seconds |
+| Snapshot (historical) | HLS recording | 2-5 seconds |
+| Bookmark (live, 15s) | Live stream | 5-15 seconds |
+| Bookmark (historical, 15s) | HLS recording | 3-10 seconds |
+| Bookmark (historical, 60s) | HLS recording | 15-30 seconds |
+
+### 8.5 Polling for Completion
+
+**Recommended Approach: Poll with Exponential Backoff**
+
+```javascript
+async function waitForBookmarkReady(bookmarkId, maxWaitMs = 60000) {
+  const startTime = Date.now();
+  let pollInterval = 1000; // Start at 1 second
+  const maxInterval = 5000; // Max 5 seconds between polls
+
+  while (Date.now() - startTime < maxWaitMs) {
+    const response = await fetch(`/v2/bookmarks/${bookmarkId}`, {
+      headers: { 'Authorization': `Bearer ${accessToken}` }
+    });
+
+    if (!response.ok) {
+      throw new Error(`Failed to fetch bookmark: ${response.status}`);
+    }
+
+    const bookmark = await response.json();
+
+    switch (bookmark.status) {
+      case 'ready':
+        return bookmark; // Success!
+
+      case 'failed':
+        throw new Error(`Bookmark processing failed: ${bookmark.error}`);
+
+      case 'processing':
+        // Wait and poll again
+        await sleep(pollInterval);
+        pollInterval = Math.min(pollInterval * 1.5, maxInterval);
+        break;
+
+      default:
+        throw new Error(`Unknown status: ${bookmark.status}`);
+    }
+  }
+
+  throw new Error('Timeout waiting for bookmark to be ready');
+}
+```
+
+### 8.6 Handling Processing Failures
+
+When processing fails, the resource will have:
+- `status: "failed"`
+- `error`: Error description
+
+**Common Failure Reasons:**
+
+| Error | Cause | Action |
+|-------|-------|--------|
+| `NO_RECORDING_DATA` | Historical data not available for requested time | Check retention period (7 days) |
+| `EXTRACTION_TIMEOUT` | FFmpeg took too long | Retry or reduce duration |
+| `DISK_FULL` | Storage exhausted | Contact admin |
+| `STREAM_NOT_FOUND` | Stream was deleted during processing | Re-check stream exists |
+
+```javascript
+async function createBookmarkWithRetry(streamId, params, maxRetries = 2) {
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    const bookmark = await createBookmark(streamId, params);
+
+    try {
+      return await waitForBookmarkReady(bookmark.id);
+    } catch (error) {
+      if (error.message.includes('EXTRACTION_TIMEOUT') && attempt < maxRetries) {
+        console.log(`Retry ${attempt + 1}/${maxRetries}...`);
+        continue;
+      }
+      throw error;
+    }
+  }
+}
+```
+
+### 8.7 Best Practices
+
+1. **Don't block on creation** - Return bookmark ID to user immediately, poll in background
+2. **Show progress indicator** - Display "Processing..." while status is `processing`
+3. **Handle failures gracefully** - Show error message, offer retry option
+4. **Set reasonable timeouts** - 60s for short clips, 120s for longer bookmarks
+5. **Batch create, then poll** - Create multiple bookmarks, then poll for all
+
+```javascript
+// Create multiple bookmarks in parallel
+const bookmarkPromises = events.map(event =>
+  createBookmark(streamId, {
+    source: 'live',
+    label: event.label,
+    center_timestamp: event.timestamp
+  })
+);
+
+const bookmarks = await Promise.all(bookmarkPromises);
+
+// Poll for all to complete
+const readyBookmarks = await Promise.all(
+  bookmarks.map(b => waitForBookmarkReady(b.id))
+);
+```
+
+### 8.8 Snapshot-Specific Notes
+
+Snapshots follow the same async pattern but are typically faster:
+
+```javascript
+// Create snapshot
+const snapshot = await fetch(`/v2/streams/${streamId}/snapshots`, {
+  method: 'POST',
+  headers: {
+    'Authorization': `Bearer ${accessToken}`,
+    'Content-Type': 'application/json'
+  },
+  body: JSON.stringify({
+    source: 'live',
+    metadata: { detection_type: 'person', confidence: 0.95 }
+  })
+}).then(r => r.json());
+
+// For live snapshots, image is usually ready within 2 seconds
+await sleep(2000);
+
+// Check if ready
+const ready = await fetch(`/v2/snapshots/${snapshot.id}`, {
+  headers: { 'Authorization': `Bearer ${accessToken}` }
+}).then(r => r.json());
+
+if (ready.status === 'ready') {
+  // Download image
+  const imageUrl = await getSnapshotImageUrl(snapshot.id);
+  displayImage(imageUrl);
+}
+```
+
+---
+
+## 9. What Ruth AI MUST NOT Do
+
+### 9.1 Anti-Patterns to Avoid
 
 #### DO NOT: Bypass VAS APIs
 
@@ -1741,7 +2251,7 @@ fetch(`/v2/streams?token=${accessToken}`);
 // Token in Authorization header only
 ```
 
-### 7.2 Summary of Anti-Patterns
+### 9.2 Summary of Anti-Patterns
 
 | Anti-Pattern | Why It's Bad | Correct Approach |
 |--------------|--------------|------------------|
@@ -1756,9 +2266,9 @@ fetch(`/v2/streams?token=${accessToken}`);
 
 ---
 
-## 8. Final Summary
+## 10. Final Summary
 
-### 8.1 How to Integrate VAS-MS-V2 in 10 Steps
+### 10.1 How to Integrate VAS-MS-V2 in 10 Steps
 
 1. **Register client** - Get `client_id` and `client_secret` from admin
 2. **Obtain tokens** - POST to `/v2/auth/token` with credentials
@@ -1771,7 +2281,7 @@ fetch(`/v2/streams?token=${accessToken}`);
 9. **Consume media** - `transport.consume()` and attach to video/AI pipeline
 10. **Cleanup** - DELETE consumer when done
 
-### 8.2 Developer Checklist
+### 10.2 Developer Checklist
 
 #### Setup
 - [ ] Registered API client with appropriate scopes
@@ -1810,7 +2320,7 @@ fetch(`/v2/streams?token=${accessToken}`);
 - [ ] Validate SSL certificates
 - [ ] Don't store tokens in localStorage
 
-### 8.3 Quick Reference Card
+### 10.3 Quick Reference Card
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
@@ -1892,6 +2402,92 @@ fetch(`/v2/streams?token=${accessToken}`);
 | `MEDIASOUP_URL` | `ws://localhost:3001` | MediaSoup server URL |
 | `MEDIASOUP_HOST` | `127.0.0.1` | MediaSoup RTP host |
 | `JWT_SECRET_KEY` | (required) | JWT signing key |
+
+---
+
+## Appendix E: OpenAPI Specification
+
+VAS-MS-V2 provides an OpenAPI 3.0 specification for automated tooling and contract testing.
+
+### Accessing the Specification
+
+| Format | Endpoint | Description |
+|--------|----------|-------------|
+| JSON | `GET /v2/openapi.json` | OpenAPI 3.0 spec in JSON format |
+| YAML | `GET /v2/openapi.yaml` | OpenAPI 3.0 spec in YAML format |
+| Swagger UI | `GET /v2/docs` | Interactive API documentation |
+| ReDoc | `GET /v2/redoc` | Alternative documentation UI |
+
+### Using for Code Generation
+
+```bash
+# Generate TypeScript client
+npx openapi-typescript-codegen \
+  --input http://vas-ms-v2:8085/v2/openapi.json \
+  --output ./src/api-client \
+  --client axios
+
+# Generate Python client
+openapi-generator generate \
+  -i http://vas-ms-v2:8085/v2/openapi.json \
+  -g python \
+  -o ./api-client
+
+# Validate requests/responses against spec
+npx @apidevtools/swagger-cli validate openapi.json
+```
+
+### Contract Testing
+
+```javascript
+// Using Prism for mock server
+npx @stoplight/prism-cli mock openapi.json
+
+// Using schemathesis for fuzz testing
+schemathesis run http://vas-ms-v2:8085/v2/openapi.json
+```
+
+### Key Schema Definitions
+
+The OpenAPI spec includes complete schemas for:
+
+- `Stream` - Stream resource with state, endpoints, producer info
+- `Consumer` - WebRTC consumer with transport parameters
+- `Bookmark` - Video clip with async processing status
+- `Snapshot` - Image capture with async processing status
+- `Error` - Standardized error response format
+- `TokenResponse` - Authentication token response
+
+### Version Compatibility
+
+| API Version | OpenAPI Spec Version | Compatibility |
+|-------------|---------------------|---------------|
+| V2 (current) | 3.0.3 | Full support |
+| V1 (legacy) | Not available | Use this guide |
+
+---
+
+## Appendix F: Complete Error Code Reference
+
+| Error Code | HTTP Status | Category | Description | Retry? |
+|------------|-------------|----------|-------------|--------|
+| `VALIDATION_ERROR` | 400 | Request | Request validation failed | No |
+| `INVALID_TOKEN` | 401 | Auth | Access token invalid | Yes (refresh) |
+| `TOKEN_EXPIRED` | 401 | Auth | Access token expired | Yes (refresh) |
+| `INVALID_REFRESH_TOKEN` | 401 | Auth | Refresh token invalid/expired | No (re-auth) |
+| `INVALID_CREDENTIALS` | 401 | Auth | Client credentials invalid | No |
+| `INSUFFICIENT_SCOPE` | 403 | Auth | Missing required scope | No |
+| `RESOURCE_NOT_FOUND` | 404 | Resource | Stream/bookmark/snapshot not found | No |
+| `STREAM_NOT_LIVE` | 409 | State | Cannot consume non-live stream | Yes (wait) |
+| `CONSUMER_ALREADY_EXISTS` | 409 | State | Consumer already attached | No |
+| `MEDIASOUP_UNAVAILABLE` | 503 | Infrastructure | MediaSoup server down | Yes (backoff) |
+| `RTSP_TIMEOUT` | 504 | Camera | Camera not responding | Yes (backoff) |
+| `SSRC_CAPTURE_FAILED` | 502 | Camera | No video from camera | Yes (backoff) |
+| `RTSP_CONNECTION_FAILED` | 502 | Camera | Cannot connect to RTSP | No (check URL) |
+| `FFMPEG_ERROR` | 500 | Processing | Transcoding failure | Yes (1x) |
+| `EXTRACTION_TIMEOUT` | 500 | Processing | Bookmark/snapshot timeout | Yes (1x) |
+| `NO_RECORDING_DATA` | 404 | Storage | Historical data not available | No |
+| `DISK_FULL` | 503 | Storage | Storage exhausted | No (admin) |
 
 ---
 
