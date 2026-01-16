@@ -351,7 +351,9 @@ async def start_device_stream(
                 }
             )
             db.add(v2_stream)
-            logger.info(f"Created V2 Stream for device {device_id}")
+            # Flush to get the stream ID assigned before creating Producer
+            await db.flush()
+            logger.info(f"Created V2 Stream {v2_stream.id} for device {device_id}")
 
         # Create Producer database record for consumer attachment support
         # First, close any existing producers for this stream
