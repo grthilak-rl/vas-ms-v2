@@ -45,8 +45,9 @@ docker-compose.override.yml
 logs/
 
 # Media files (HLS video segments and playlists)
-recordings/
-snapshots/
+# Note: /recordings and /snapshots are root-level media directories, not frontend/app/*
+/recordings/
+/snapshots/
 recordings/**/*.ts
 *.m3u8
 

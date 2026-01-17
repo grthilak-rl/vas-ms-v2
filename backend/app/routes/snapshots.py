@@ -47,9 +47,9 @@ async def capture_live_snapshot(
                 detail="Device not found"
             )
 
-        # Capture snapshot
+        # Capture snapshot (V1 uses device_id as stream_id for compatibility)
         snapshot = await snapshot_service.capture_from_live_stream(
-            device_id=device_id,
+            stream_id=device_id,
             rtsp_url=device.rtsp_url,
             db=db
         )
@@ -58,7 +58,7 @@ async def capture_live_snapshot(
             "status": "success",
             "snapshot": {
                 "id": str(snapshot.id),
-                "device_id": str(snapshot.device_id),
+                "device_id": str(snapshot.stream_id),
                 "timestamp": snapshot.timestamp.isoformat(),
                 "source": snapshot.source,
                 "file_size": snapshot.file_size,
@@ -119,9 +119,9 @@ async def capture_historical_snapshot(
         else:
             timestamp = datetime.now()
 
-        # Capture snapshot
+        # Capture snapshot (V1 uses device_id as stream_id for compatibility)
         snapshot = await snapshot_service.capture_from_historical(
-            device_id=device_id,
+            stream_id=device_id,
             timestamp=timestamp,
             db=db
         )
@@ -130,7 +130,7 @@ async def capture_historical_snapshot(
             "status": "success",
             "snapshot": {
                 "id": str(snapshot.id),
-                "device_id": str(snapshot.device_id),
+                "device_id": str(snapshot.stream_id),
                 "timestamp": snapshot.timestamp.isoformat(),
                 "source": snapshot.source,
                 "file_size": snapshot.file_size,
@@ -170,9 +170,12 @@ async def list_snapshots(
         List of snapshots
     """
     try:
+        # V1 API uses device_id, but service uses stream_id
+        # For V1 compatibility, we pass device_id as stream_id since
+        # the V1 API stored snapshots with device_id in the stream_id field
         snapshots = await snapshot_service.list_snapshots(
             db=db,
-            device_id=device_id,
+            stream_id=device_id,
             limit=limit
         )
 
@@ -180,14 +183,14 @@ async def list_snapshots(
         for snapshot in snapshots:
             device_name = None
             try:
-                if snapshot.device:
-                    device_name = snapshot.device.name
+                if snapshot.stream:
+                    device_name = snapshot.stream.name
             except:
                 pass  # Ignore lazy loading errors
 
             snapshot_list.append({
                 "id": str(snapshot.id),
-                "device_id": str(snapshot.device_id),
+                "device_id": str(snapshot.stream_id),  # V1 API returns stream_id as device_id
                 "device_name": device_name,
                 "timestamp": snapshot.timestamp.isoformat(),
                 "source": snapshot.source,
@@ -234,8 +237,8 @@ async def get_snapshot(
 
     device_name = None
     try:
-        if snapshot.device:
-            device_name = snapshot.device.name
+        if snapshot.stream:
+            device_name = snapshot.stream.name
     except:
         pass  # Ignore lazy loading errors
 
@@ -243,7 +246,7 @@ async def get_snapshot(
         "status": "success",
         "snapshot": {
             "id": str(snapshot.id),
-            "device_id": str(snapshot.device_id),
+            "device_id": str(snapshot.stream_id),  # V1 API returns stream_id as device_id
             "device_name": device_name,
             "timestamp": snapshot.timestamp.isoformat(),
             "source": snapshot.source,
