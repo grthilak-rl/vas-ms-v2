@@ -44,10 +44,10 @@ docker-compose.override.yml
 *.log
 logs/
 
-# Media files
+# Media files (HLS video segments and playlists)
 recordings/
 snapshots/
-*.ts
+recordings/**/*.ts
 *.m3u8
 
 # Temporary files
