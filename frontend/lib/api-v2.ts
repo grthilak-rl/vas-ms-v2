@@ -5,7 +5,7 @@
 
 import { getValidAccessToken, clearAuth, clearClientCredentials } from './auth';
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://10.30.250.245:8085';
+const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://10.30.250.99:8085';
 
 /**
  * Create authenticated headers with JWT token

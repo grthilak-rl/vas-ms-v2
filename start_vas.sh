@@ -6,8 +6,8 @@ echo "Starting VAS services..."
 echo "================================"
 
 # Set backend IP
-BACKEND_IP=${BACKEND_IP:-"10.30.250.245"}
-BACKEND_PORT=${BACKEND_PORT:-"8080"}
+BACKEND_IP=${BACKEND_IP:-"10.30.250.99"}
+BACKEND_PORT=${BACKEND_PORT:-"8085"}
 
 # Start Backend
 echo "Starting Backend on ${BACKEND_IP}:${BACKEND_PORT}..."

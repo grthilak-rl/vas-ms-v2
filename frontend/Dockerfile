@@ -16,7 +16,7 @@ COPY . .
 
 # Set environment variables (passed as build arg from docker-compose)
 # Note: NEXT_PUBLIC_ vars are baked at build time, so we use ARG to pass it in
-ARG NEXT_PUBLIC_API_URL=http://10.30.250.245:8080
+ARG NEXT_PUBLIC_API_URL=http://10.30.250.99:8085
 ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
 
 RUN npm run build

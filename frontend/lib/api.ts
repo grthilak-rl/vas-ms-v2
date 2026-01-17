@@ -1,4 +1,4 @@
-export const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://10.30.250.245:8085';
+export const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://10.30.250.99:8085';
 export const API_KEY = process.env.NEXT_PUBLIC_API_KEY || 'vas_default_api_key_change_in_production';
 
 // Common headers for all API requests

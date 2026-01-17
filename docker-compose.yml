@@ -105,11 +105,11 @@ services:
       dockerfile: Dockerfile
       args:
         # Use host IP for external access (frontend runs in browser, needs host-accessible URL)
-        NEXT_PUBLIC_API_URL: http://10.30.250.245:8085
+        NEXT_PUBLIC_API_URL: http://10.30.250.99:8085
     container_name: vas-ms-v2-frontend
     environment:
       # Browser needs to access backend via host IP, not container name
-      NEXT_PUBLIC_API_URL: http://10.30.250.245:8085
+      NEXT_PUBLIC_API_URL: http://10.30.250.99:8085
     ports:
       - "3200:3000"
     depends_on:

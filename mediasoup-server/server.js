@@ -53,7 +53,7 @@ const config = {
       listenIps: [
         {
           ip: '0.0.0.0',
-          announcedIp: process.env.MEDIASOUP_ANNOUNCED_IP || '10.30.250.245', // Server's public IP
+          announcedIp: process.env.MEDIASOUP_ANNOUNCED_IP || '10.30.250.99', // Server's public IP
         },
       ],
       enableUdp: true,
