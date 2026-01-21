@@ -229,37 +229,99 @@ async def start_device_stream(
         except Exception as e:
             logger.warning(f"Error cleaning up orphaned FFmpeg processes: {e}")
         
-        # 1. Create PlainRTP transport in MediaSoup for FFmpeg input
-        logger.info(f"Creating PlainRTP transport for device {device_id}")
-        transport_info = await mediasoup_client.create_plain_rtp_transport(room_id)
+        # SSRC Capture Workflow:
+        # 0. Close old transports first (releases the port for SSRC capture)
+        # 1. Get deterministic port for this room
+        # 2. Start SSRC capture (binds UDP socket) and FFmpeg (sends to that port) concurrently
+        # 3. SSRC capture extracts SSRC from first packet, closes socket
+        # 4. Create MediaSoup transport on same port (now available)
+        # 5. Create producer (before connecting transport)
+        # 6. Connect transport to FFmpeg source
+
+        mediasoup_host = os.getenv("MEDIASOUP_HOST", "127.0.0.1")
+
+        # Step 0: Close old transports for this room (releases the port)
+        try:
+            closed_count = await mediasoup_client.close_transports_for_room(room_id)
+            if closed_count > 0:
+                logger.info(f"Closed {closed_count} old transport(s) for room {room_id}")
+                await asyncio.sleep(0.3)  # Brief delay to ensure port is released
+        except Exception as e:
+            logger.warning(f"Error closing old transports: {e}")
+
+        # Step 1: Get deterministic port for this room
+        logger.info(f"Getting port for room {room_id}...")
+        video_port = await mediasoup_client.get_port_for_room(room_id)
+        logger.info(f"Using port {video_port} for room {room_id}")
+
+        # Step 2: Start SSRC capture and FFmpeg concurrently
+        # We need FFmpeg to start sending packets so we can capture the SSRC
+        logger.info(f"Starting SSRC capture and FFmpeg concurrently...")
+
+        async def start_ffmpeg_delayed():
+            """Start FFmpeg after a brief delay to ensure capture socket is bound."""
+            await asyncio.sleep(0.2)  # Give capture socket time to bind
+            return await rtsp_pipeline.start_stream(
+                stream_id=room_id,
+                rtsp_url=device.rtsp_url,
+                mediasoup_ip=mediasoup_host,
+                mediasoup_video_port=video_port,
+                ssrc=None  # FFmpeg will use random SSRC, we'll capture it
+            )
+
+        # Run SSRC capture and FFmpeg start concurrently
+        # Timeout is 15 seconds to allow for slow RTSP camera connections
+        ssrc_capture_task = mediasoup_client.capture_ssrc(video_port, timeout_ms=15000)
+        ffmpeg_task = start_ffmpeg_delayed()
+
+        ssrc_result, stream_info = await asyncio.gather(
+            ssrc_capture_task,
+            ffmpeg_task,
+            return_exceptions=True
+        )
+
+        # Handle exceptions from gather
+        if isinstance(ssrc_result, Exception):
+            logger.error(f"SSRC capture failed: {ssrc_result}")
+            ssrc_result = {"ssrc": None, "success": False}
+        if isinstance(stream_info, Exception):
+            logger.error(f"FFmpeg start failed: {stream_info}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to start FFmpeg: {stream_info}"
+            )
+
+        if stream_info.get("status") == "error":
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to start FFmpeg: {stream_info.get('error')}"
+            )
+
+        captured_ssrc = ssrc_result.get("ssrc")
+        if not captured_ssrc:
+            logger.warning(f"Failed to capture SSRC - stream may not work correctly")
+            # Try to continue anyway - the stream might still work
+            captured_ssrc = 0
+
+        logger.info(f"✅ SSRC captured: {captured_ssrc} (0x{captured_ssrc:08x})")
+        logger.info(f"✅ FFmpeg started sending to port {video_port}")
+
+        # Step 3: Create PlainRTP transport on the same port
+        # The capture socket is now closed, so we can bind MediaSoup to this port
+        logger.info(f"Creating PlainRTP transport on port {video_port}...")
+        transport_info = await mediasoup_client.create_plain_rtp_transport(room_id, fixed_port=video_port)
 
         if not transport_info:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Failed to create PlainRTP transport: MediaSoup returned no transport info"
+                detail="Failed to create PlainRTP transport"
             )
 
         transport_id = transport_info["id"]
-        video_port = transport_info["port"]
+        logger.info(f"PlainRTP transport created: {transport_id}")
 
-        logger.info(f"PlainRTP transport created: {transport_id}, port: {video_port}")
-
-        # 2. Capture SSRC from RTSP source (using temporary FFmpeg)
-        logger.info(f"Capturing SSRC from RTSP source: {device.rtsp_url}")
-        detected_ssrc = await rtsp_pipeline.capture_ssrc_with_temp_ffmpeg(device.rtsp_url, timeout=15.0)
-
-        if not detected_ssrc:
-            logger.error("Failed to capture SSRC - stream may not work properly")
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Failed to capture SSRC from RTSP source. Please check the RTSP URL and network connectivity."
-            )
-
-        logger.info(f"✅ SSRC captured: {detected_ssrc} (0x{detected_ssrc:08x})")
-
-        # 3. Create producer with the captured SSRC BEFORE starting FFmpeg
-        # This ensures MediaSoup is ready to match packets when they arrive
-        # MediaSoup PlainRtpTransport REQUIRES explicit SSRC - comedia only auto-detects IP/port
+        # Step 4: Create producer FIRST (before connecting transport)
+        # This ensures the producer is ready when packets start arriving
         video_rtp_parameters = {
             "mid": "video",
             "codecs": [{
@@ -271,50 +333,41 @@ async def start_device_stream(
                 },
                 "payloadType": 96
             }],
-            "encodings": [{"ssrc": detected_ssrc}]  # Use captured SSRC - REQUIRED for PlainRtpTransport
+            "encodings": [{"ssrc": captured_ssrc}]  # Use the captured SSRC
         }
 
-        # Close any old producers for this room to prevent accumulation
+        # Close any old producers for this room
         try:
             old_producers = await mediasoup_client.get_producers(room_id)
             if old_producers:
-                logger.info(f"Found {len(old_producers)} old producer(s) for room {room_id}, cleaning up...")
+                logger.info(f"Found {len(old_producers)} old producer(s), cleaning up...")
                 for old_producer_id in old_producers:
                     try:
                         await mediasoup_client.close_producer(old_producer_id)
-                        logger.info(f"Closed old producer: {old_producer_id}")
                     except Exception as e:
-                        logger.warning(f"Failed to close old producer {old_producer_id}: {e}")
+                        logger.warning(f"Failed to close old producer: {e}")
         except Exception as e:
             logger.warning(f"Error cleaning up old producers: {e}")
 
-        logger.info(f"Creating producer with SSRC: {detected_ssrc}")
+        logger.info(f"Creating producer with SSRC {captured_ssrc}...")
         video_producer = await mediasoup_client.create_producer(
             transport_id, "video", video_rtp_parameters
         )
-        logger.info(f"✅ Producer created: {video_producer.get('id')}")
+        producer_id = video_producer.get('id')
+        logger.info(f"✅ Producer created: {producer_id}")
 
-        # 4. NOW start FFmpeg to send RTP to MediaSoup (producer already exists and ready)
-        logger.info(f"Starting FFmpeg to send RTP to MediaSoup...")
-        # Both backend and MediaSoup run in host network mode
-        mediasoup_host = os.getenv("MEDIASOUP_HOST", "127.0.0.1")
-        stream_info = await rtsp_pipeline.start_stream(
-            stream_id=room_id,
-            rtsp_url=device.rtsp_url,
-            mediasoup_ip=mediasoup_host,
-            mediasoup_video_port=video_port,
-            ssrc=detected_ssrc  # Pass SSRC for logging
+        # Step 5: NOW connect transport to FFmpeg source
+        # The producer is already waiting for packets with the correct SSRC
+        ffmpeg_source_port = rtsp_pipeline.get_ffmpeg_source_port(room_id)
+        logger.info(f"Connecting transport to FFmpeg source 127.0.0.1:{ffmpeg_source_port}...")
+        await mediasoup_client.connect_plain_transport(
+            transport_id=transport_id,
+            ip="127.0.0.1",
+            port=ffmpeg_source_port
         )
 
-        if stream_info.get("status") == "error":
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Failed to start FFmpeg: {stream_info.get('error')}"
-            )
-
-        # Wait for producer to actually receive RTP packets before returning success
+        # 7. Wait for producer to actually receive RTP packets before returning success
         # This prevents the race condition where frontend connects before FFmpeg is streaming
-        producer_id = video_producer["id"]
         logger.info(f"Waiting for producer {producer_id} to receive RTP packets...")
 
         producer_ready = await mediasoup_client.wait_for_producer_ready(
@@ -342,7 +395,7 @@ async def start_device_stream(
             v2_stream.stream_metadata = {
                 "transport_id": transport_id,
                 "producer_id": video_producer["id"],
-                "ssrc": detected_ssrc,
+                "ssrc": captured_ssrc,
                 "started_at": datetime.now(timezone.utc).isoformat()
             }
             logger.info(f"Updated V2 Stream {v2_stream.id} to LIVE state")
@@ -362,7 +415,7 @@ async def start_device_stream(
                 stream_metadata={
                     "transport_id": transport_id,
                     "producer_id": video_producer["id"],
-                    "ssrc": detected_ssrc,
+                    "ssrc": captured_ssrc,
                     "started_at": datetime.now(timezone.utc).isoformat()
                 }
             )
@@ -388,7 +441,7 @@ async def start_device_stream(
             mediasoup_producer_id=video_producer["id"],
             mediasoup_transport_id=transport_id,
             mediasoup_router_id=room_id,  # Using room_id as router_id
-            ssrc=detected_ssrc,
+            ssrc=captured_ssrc,  # SSRC captured from FFmpeg's RTP packets
             rtp_parameters={
                 "codecs": [{
                     "mimeType": "video/H264",
@@ -396,7 +449,7 @@ async def start_device_stream(
                     "payloadType": 96,
                     "parameters": {"packetization-mode": 1, "profile-level-id": "42e01f"}
                 }],
-                "encodings": [{"ssrc": detected_ssrc}]
+                "encodings": [{"ssrc": captured_ssrc}]
             },
             state=ProducerState.ACTIVE
         )

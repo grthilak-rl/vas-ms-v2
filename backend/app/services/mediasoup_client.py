@@ -14,14 +14,16 @@ class MediaSoupClient:
     """
     Client for communicating with MediaSoup server.
     """
-    
+
     def __init__(self, mediasoup_url: str = "ws://localhost:3001"):
         """Initialize MediaSoup client."""
         self.mediasoup_url = mediasoup_url
         self.websocket: Optional[websockets.WebSocketClientProtocol] = None
         self.response_futures: Dict[str, asyncio.Future] = {}
         self.connected = False
-        
+        # Lock to prevent concurrent WebSocket requests (responses aren't correlated)
+        self._request_lock = asyncio.Lock()
+
         logger.info(f"MediaSoup client initialized (server: {mediasoup_url})")
     
     async def connect(self):
@@ -51,54 +53,59 @@ class MediaSoupClient:
     async def _send_request(self, request_type: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         """
         Send request to MediaSoup server and wait for response.
-        
+
+        Uses a lock to prevent concurrent requests since responses aren't correlated
+        by ID - we just read the next message as the response.
+
         Args:
             request_type: Type of request
             payload: Request payload
-            
+
         Returns:
             Response data
         """
-        # Check if connection is alive, reconnect if needed
-        if not self.connected or not self.websocket or (hasattr(self.websocket, 'closed') and self.websocket.closed):
-            logger.warning("WebSocket connection lost, reconnecting...")
-            await self.connect()
-        
-        message = {
-            "type": request_type,
-            "payload": payload
-        }
-        
-        try:
-            await self.websocket.send(json.dumps(message))
-            logger.debug(f"MediaSoup request sent: {request_type}")
-            
-            # Wait for response
-            response_message = await self.websocket.recv()
-            response = json.loads(response_message)
-            
-            # Check for errors in response
-            if "error" in response:
-                error_msg = response.get("error", "Unknown error")
-                logger.error(f"MediaSoup error for {request_type}: {error_msg}")
-                raise RuntimeError(f"MediaSoup error: {error_msg}")
-            
-            logger.debug(f"MediaSoup response received for {request_type}")
-            return response
-            
-        except (websockets.exceptions.ConnectionClosed, websockets.exceptions.ConnectionClosedError) as e:
-            # Connection closed, mark as disconnected and reconnect
-            logger.warning(f"WebSocket connection closed during {request_type}: {e}")
-            self.connected = False
-            self.websocket = None
-            raise RuntimeError(f"MediaSoup connection closed. Please try again.")
-        
-        except Exception as e:
-            # On any other error, mark as disconnected if it's a connection error
-            if "connection" in str(e).lower() or "closed" in str(e).lower():
+        # Use lock to serialize requests - responses aren't correlated by ID
+        async with self._request_lock:
+            # Check if connection is alive, reconnect if needed
+            if not self.connected or not self.websocket or (hasattr(self.websocket, 'closed') and self.websocket.closed):
+                logger.warning("WebSocket connection lost, reconnecting...")
+                await self.connect()
+
+            message = {
+                "type": request_type,
+                "payload": payload
+            }
+
+            try:
+                await self.websocket.send(json.dumps(message))
+                logger.debug(f"MediaSoup request sent: {request_type}")
+
+                # Wait for response
+                response_message = await self.websocket.recv()
+                response = json.loads(response_message)
+
+                # Check for errors in response
+                if "error" in response:
+                    error_msg = response.get("error", "Unknown error")
+                    logger.error(f"MediaSoup error for {request_type}: {error_msg}")
+                    raise RuntimeError(f"MediaSoup error: {error_msg}")
+
+                logger.debug(f"MediaSoup response received for {request_type}")
+                return response
+
+            except (websockets.exceptions.ConnectionClosed, websockets.exceptions.ConnectionClosedError) as e:
+                # Connection closed, mark as disconnected and reconnect
+                logger.warning(f"WebSocket connection closed during {request_type}: {e}")
                 self.connected = False
                 self.websocket = None
-            raise
+                raise RuntimeError(f"MediaSoup connection closed. Please try again.")
+
+            except Exception as e:
+                # On any other error, mark as disconnected if it's a connection error
+                if "connection" in str(e).lower() or "closed" in str(e).lower():
+                    self.connected = False
+                    self.websocket = None
+                raise
     
     async def get_router_rtp_capabilities(self, room_id: str) -> Dict[str, Any]:
         """
@@ -113,18 +120,75 @@ class MediaSoupClient:
         response = await self._send_request("getRouterRtpCapabilities", {"roomId": room_id})
         return response.get("rtpCapabilities")
     
-    async def create_plain_rtp_transport(self, room_id: str) -> Dict[str, Any]:
+    async def create_plain_rtp_transport(
+        self,
+        room_id: str,
+        fixed_port: int = None
+    ) -> Dict[str, Any]:
         """
         Create PlainRTP transport for FFmpeg input.
-        
+
         Args:
             room_id: Room/device identifier
-            
+            fixed_port: Optional fixed port for the transport (used with SSRC capture)
+
         Returns:
             Transport info with RTP ports
         """
-        response = await self._send_request("createPlainRtpTransport", {"roomId": room_id})
+        payload = {"roomId": room_id}
+        if fixed_port is not None:
+            payload["fixedPort"] = fixed_port
+        response = await self._send_request("createPlainRtpTransport", payload)
         return response.get("transportInfo")
+
+    async def get_port_for_room(self, room_id: str) -> int:
+        """
+        Get the deterministic port for a room.
+
+        This returns a port number based on the room_id hash. The same room_id
+        will always get the same port. Use this port for SSRC capture and
+        transport creation.
+
+        Args:
+            room_id: Room/device identifier
+
+        Returns:
+            Port number (20100-20999)
+        """
+        response = await self._send_request("getPortForRoom", {"roomId": room_id})
+        return response.get("port")
+
+    async def capture_ssrc(
+        self,
+        port: int,
+        timeout_ms: int = 8000
+    ) -> Dict[str, Any]:
+        """
+        Capture SSRC from incoming RTP packets on a specific port.
+
+        This binds a UDP socket to the port and waits for the first RTP packet.
+        When a packet arrives, it extracts the SSRC and returns.
+        The socket is closed after capture (or timeout).
+
+        IMPORTANT: FFmpeg must be started AFTER this method is called (so the
+        socket is bound) but BEFORE the timeout. Use asyncio.gather() to run
+        FFmpeg start in parallel with this method.
+
+        Args:
+            port: Port to listen on (from get_port_for_room)
+            timeout_ms: Timeout in milliseconds
+
+        Returns:
+            Dict with 'ssrc' (or None if failed), 'success' bool
+        """
+        response = await self._send_request("captureSSRC", {
+            "port": port,
+            "timeoutMs": timeout_ms
+        })
+        return {
+            "ssrc": response.get("ssrc"),
+            "success": response.get("success", False),
+        }
     
     async def get_transport_stats(
         self,
@@ -301,6 +365,45 @@ class MediaSoupClient:
             "timestamp": response.get("timestamp", 0),
         }
 
+    async def connect_plain_transport(
+        self,
+        transport_id: str,
+        ip: str,
+        port: int,
+        rtcp_port: int = None
+    ) -> Dict[str, Any]:
+        """
+        Connect PlainRtpTransport to remote endpoint (FFmpeg source).
+
+        This must be called BEFORE creating a producer, so the transport knows
+        where to expect RTP packets from. This is the reliable alternative to
+        comedia mode.
+
+        Args:
+            transport_id: Transport identifier
+            ip: Remote IP address (FFmpeg source)
+            port: Remote RTP port
+            rtcp_port: Remote RTCP port (optional, only if not using rtcpMux)
+
+        Returns:
+            Dict with connection info
+        """
+        payload = {
+            "transportId": transport_id,
+            "ip": ip,
+            "port": port,
+        }
+        if rtcp_port is not None:
+            payload["rtcpPort"] = rtcp_port
+
+        response = await self._send_request("connectPlainTransport", payload)
+        logger.info(f"PlainRtpTransport connected: transport={transport_id}, remote={ip}:{port}")
+        return {
+            "connected": response.get("connected", False),
+            "remoteIp": response.get("remoteIp"),
+            "remotePort": response.get("remotePort"),
+        }
+
     async def close_producer(self, producer_id: str):
         """
         Close a producer.
@@ -314,12 +417,30 @@ class MediaSoupClient:
     async def close_transport(self, transport_id: str):
         """
         Close a transport (this will close all producers on it).
-        
+
         Args:
             transport_id: Transport identifier
         """
         await self._send_request("closeTransport", {"transportId": transport_id})
         logger.info(f"Closed transport: {transport_id}")
+
+    async def close_transports_for_room(self, room_id: str) -> int:
+        """
+        Close all PlainRTP transports for a room.
+
+        This releases the port they're bound to, allowing SSRC capture
+        to bind to that port.
+
+        Args:
+            room_id: Room/device identifier
+
+        Returns:
+            Number of transports closed
+        """
+        response = await self._send_request("closeTransportsForRoom", {"roomId": room_id})
+        closed_count = response.get("closedCount", 0)
+        logger.info(f"Closed {closed_count} transport(s) for room {room_id}")
+        return closed_count
     
     async def disconnect(self):
         """Disconnect from MediaSoup server."""

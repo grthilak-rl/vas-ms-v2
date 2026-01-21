@@ -44,6 +44,7 @@ services:
     network_mode: host  # Required for WebRTC and RTP traffic
     environment:
       MEDIASOUP_ANNOUNCED_IP: 10.30.250.99  # Server's public IP for WebRTC
+      DEBUG: "*WARN* *ERROR* mediasoup:PlainTransport mediasoup:Producer"  # Enable MediaSoup debug logging
     healthcheck:
       test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:3001/health"]
       interval: 30s

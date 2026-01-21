@@ -45,48 +45,85 @@ async def restart_stream_handler(room_id: str) -> bool:
 
             rtsp_url = device.rtsp_url
 
-        # Step 1: Stop existing stream
+        # Step 1: Stop existing stream (FFmpeg)
         logger.info(f"Stopping existing stream for room: {room_id}")
         await rtsp_pipeline.stop_stream(room_id)
 
-        # Brief delay to ensure cleanup
-        await asyncio.sleep(1.0)
-
-        # Step 2: Close old producers in MediaSoup
+        # Step 2: Close old transports in MediaSoup (releases the port for SSRC capture)
+        # This must happen BEFORE SSRC capture so we can bind to the port
         try:
-            old_producers = await mediasoup_client.get_producers(room_id)
-            for producer_id in old_producers:
-                try:
-                    await mediasoup_client.close_producer(producer_id)
-                    logger.info(f"Closed old producer: {producer_id}")
-                except Exception as e:
-                    logger.warning(f"Failed to close producer {producer_id}: {e}")
+            closed_count = await mediasoup_client.close_transports_for_room(room_id)
+            logger.info(f"Closed {closed_count} transport(s) for room {room_id}")
         except Exception as e:
-            logger.warning(f"Error cleaning up old producers: {e}")
+            logger.warning(f"Error closing transports: {e}")
 
-        # Step 3: Create new transport
-        logger.info(f"Creating new PlainRTP transport for room: {room_id}")
-        transport_info = await mediasoup_client.create_plain_rtp_transport(room_id)
+        # Brief delay to ensure port is released
+        await asyncio.sleep(0.5)
+
+        # SSRC Capture Workflow:
+        # 1. Get deterministic port for this room
+        # 2. Start SSRC capture and FFmpeg concurrently
+        # 3. Create MediaSoup transport on same port
+        # 4. Connect transport and create producer with SSRC
+
+        mediasoup_host = os.getenv("MEDIASOUP_HOST", "127.0.0.1")
+
+        # Step 3: Get deterministic port for this room
+        video_port = await mediasoup_client.get_port_for_room(room_id)
+        logger.info(f"Using port {video_port} for room {room_id}")
+
+        # Step 4: Start SSRC capture and FFmpeg concurrently
+        async def start_ffmpeg_delayed():
+            """Start FFmpeg after a brief delay to ensure capture socket is bound."""
+            await asyncio.sleep(0.2)
+            return await rtsp_pipeline.start_stream(
+                stream_id=room_id,
+                rtsp_url=rtsp_url,
+                mediasoup_ip=mediasoup_host,
+                mediasoup_video_port=video_port,
+                ssrc=None
+            )
+
+        ssrc_capture_task = mediasoup_client.capture_ssrc(video_port, timeout_ms=8000)
+        ffmpeg_task = start_ffmpeg_delayed()
+
+        ssrc_result, stream_info = await asyncio.gather(
+            ssrc_capture_task,
+            ffmpeg_task,
+            return_exceptions=True
+        )
+
+        # Handle exceptions from gather
+        if isinstance(ssrc_result, Exception):
+            logger.error(f"SSRC capture failed during restart: {ssrc_result}")
+            ssrc_result = {"ssrc": None, "success": False}
+        if isinstance(stream_info, Exception):
+            logger.error(f"FFmpeg start failed during restart: {stream_info}")
+            return False
+
+        if stream_info.get("status") == "error":
+            logger.error(f"FFmpeg failed to start for room: {room_id}")
+            return False
+
+        captured_ssrc = ssrc_result.get("ssrc")
+        if not captured_ssrc:
+            logger.warning(f"Failed to capture SSRC during restart - stream may not work")
+            captured_ssrc = 0
+
+        logger.info(f"✅ SSRC captured during restart: {captured_ssrc} (0x{captured_ssrc:08x})")
+
+        # Step 5: Create PlainRTP transport on the same port
+        transport_info = await mediasoup_client.create_plain_rtp_transport(room_id, fixed_port=video_port)
 
         if not transport_info:
             logger.error(f"Failed to create transport for room: {room_id}")
             return False
 
         transport_id = transport_info["id"]
-        video_port = transport_info["port"]
-        logger.info(f"New transport created: {transport_id}, port: {video_port}")
+        logger.info(f"New transport created: {transport_id}")
 
-        # Step 4: Capture SSRC
-        logger.info(f"Capturing SSRC from RTSP source: {rtsp_url}")
-        detected_ssrc = await rtsp_pipeline.capture_ssrc_with_temp_ffmpeg(rtsp_url, timeout=15.0)
-
-        if not detected_ssrc:
-            logger.error(f"Failed to capture SSRC for room: {room_id}")
-            return False
-
-        logger.info(f"SSRC captured: {detected_ssrc}")
-
-        # Step 5: Create new producer
+        # Step 6: Create producer FIRST (before connecting transport)
+        # This ensures the producer is ready when packets start arriving
         video_rtp_parameters = {
             "mid": "video",
             "codecs": [{
@@ -98,7 +135,7 @@ async def restart_stream_handler(room_id: str) -> bool:
                 },
                 "payloadType": 96
             }],
-            "encodings": [{"ssrc": detected_ssrc}]
+            "encodings": [{"ssrc": captured_ssrc}]
         }
 
         video_producer = await mediasoup_client.create_producer(
@@ -107,22 +144,17 @@ async def restart_stream_handler(room_id: str) -> bool:
         producer_id = video_producer.get("id")
         logger.info(f"New producer created: {producer_id}")
 
-        # Step 6: Start FFmpeg
-        mediasoup_host = os.getenv("MEDIASOUP_HOST", "127.0.0.1")
-
-        stream_info = await rtsp_pipeline.start_stream(
-            stream_id=room_id,
-            rtsp_url=rtsp_url,
-            mediasoup_ip=mediasoup_host,
-            mediasoup_video_port=video_port,
-            ssrc=detected_ssrc
+        # Step 7: NOW connect transport to FFmpeg source
+        # The producer is already waiting for packets with the correct SSRC
+        ffmpeg_source_port = rtsp_pipeline.get_ffmpeg_source_port(room_id)
+        logger.info(f"Connecting transport to FFmpeg source 127.0.0.1:{ffmpeg_source_port}...")
+        await mediasoup_client.connect_plain_transport(
+            transport_id=transport_id,
+            ip="127.0.0.1",
+            port=ffmpeg_source_port
         )
 
-        if stream_info.get("status") == "error":
-            logger.error(f"FFmpeg failed to start for room: {room_id}")
-            return False
-
-        # Step 7: Wait for producer to receive packets
+        # Step 8: Wait for producer to receive packets
         producer_ready = await mediasoup_client.wait_for_producer_ready(
             producer_id,
             timeout=8.0,
@@ -137,7 +169,7 @@ async def restart_stream_handler(room_id: str) -> bool:
             stream_health_monitor.mark_stream_healthy(room_id)
 
             # Update database records
-            await _update_stream_records(room_id, transport_id, producer_id, detected_ssrc)
+            await _update_stream_records(room_id, transport_id, producer_id, captured_ssrc)
 
             return True
         else:

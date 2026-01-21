@@ -212,6 +212,23 @@ class RTSPPipeline:
             logger.error(f"Failed to capture RTP SSRC: {e}")
             return None
     
+    def get_ffmpeg_source_port(self, stream_id: str) -> int:
+        """
+        Get a deterministic source port for FFmpeg based on stream_id.
+        This allows us to explicitly connect the PlainRtpTransport to a known port.
+
+        Port range: 40000-49999 (10000 ports available)
+
+        Args:
+            stream_id: Stream identifier
+
+        Returns:
+            Port number for FFmpeg to bind to
+        """
+        # Use hash of stream_id to get a port in the 40000-49999 range
+        port = 40000 + (abs(hash(stream_id)) % 10000)
+        return port
+
     async def start_stream(
         self,
         stream_id: str,
@@ -234,7 +251,7 @@ class RTSPPipeline:
             ssrc: SSRC value (for logging/tracking only)
 
         Returns:
-            Stream status
+            Stream status (includes ffmpeg_source_port for transport connection)
         """
         if stream_id in self.active_streams:
             logger.warning(f"Stream {stream_id} is already running")
@@ -298,7 +315,13 @@ class RTSPPipeline:
                 ffmpeg_cmd.extend(["-ssrc", str(ssrc_signed)])
                 logger.info(f"Configuring FFmpeg to use SSRC: {ssrc} (signed: {ssrc_signed})")
 
-            ffmpeg_cmd.append(f"rtp://{mediasoup_ip}:{mediasoup_video_port}?pkt_size=1200")
+            # Get deterministic source port for FFmpeg
+            # This allows us to explicitly connect the PlainRtpTransport to this known port
+            ffmpeg_source_port = self.get_ffmpeg_source_port(stream_id)
+            logger.info(f"FFmpeg will send RTP from local port {ffmpeg_source_port}")
+
+            # Include localport in the RTP URL so MediaSoup can be connected to a known endpoint
+            ffmpeg_cmd.append(f"rtp://{mediasoup_ip}:{mediasoup_video_port}?pkt_size=1200&localport={ffmpeg_source_port}")
 
             # Output 2: HLS for Historical Playback/Recording
             ffmpeg_cmd.extend([
@@ -364,6 +387,7 @@ class RTSPPipeline:
                 "status": "active",
                 "mediasoup_ip": mediasoup_ip,
                 "mediasoup_video_port": mediasoup_video_port,
+                "ffmpeg_source_port": ffmpeg_source_port,  # Port FFmpeg sends from (for transport connect)
                 "protocol": "rtp",
                 "mode": "video_only",
                 "health_check": "healthy",

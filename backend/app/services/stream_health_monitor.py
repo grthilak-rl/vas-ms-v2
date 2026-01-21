@@ -22,9 +22,9 @@ class StreamHealthMonitor:
     def __init__(
         self,
         check_interval: float = 10.0,  # Check every 10 seconds
-        stale_threshold: int = 3,  # Number of consecutive checks with no packet increase
-        restart_cooldown: float = 30.0,  # Minimum seconds between restart attempts
-        max_restart_attempts: int = 3,  # Max restarts before giving up (resets after success)
+        stale_threshold: int = 5,  # Number of consecutive checks with no packet increase
+        restart_cooldown: float = 120.0,  # Minimum seconds between restart attempts
+        max_restart_attempts: int = 2,  # Max restarts before giving up (resets after success)
     ):
         """
         Initialize the health monitor.
@@ -189,6 +189,19 @@ class StreamHealthMonitor:
             # Get all producer stats in one call
             result = await mediasoup_client.get_all_producer_stats()
             stats_list = result.get("stats", [])
+
+            # Get set of current producer IDs from MediaSoup
+            current_producer_ids = {stat.get("producerId") for stat in stats_list if stat.get("producerId")}
+
+            # Clean up tracking for producers that no longer exist in MediaSoup
+            stale_tracked_producers = [
+                pid for pid in self._last_packet_counts.keys()
+                if pid not in current_producer_ids
+            ]
+            for pid in stale_tracked_producers:
+                self._last_packet_counts.pop(pid, None)
+                self._stale_counts.pop(pid, None)
+                logger.debug(f"Removed tracking for closed producer: {pid}")
 
             if not stats_list:
                 logger.debug("No producers to monitor")

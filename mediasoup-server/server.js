@@ -135,22 +135,84 @@ async function createRouter(roomId) {
 }
 
 /**
- * Create PlainRtpTransport for FFmpeg input
+ * Get a deterministic port for a room based on its ID.
+ * Port range: 20100-20999 (900 ports available)
  */
-async function createPlainRtpTransport(roomId) {
+function getPortForRoom(roomId) {
+  // Use a simple hash of the room ID to get a port
+  let hash = 0;
+  for (let i = 0; i < roomId.length; i++) {
+    const char = roomId.charCodeAt(i);
+    hash = ((hash << 5) - hash) + char;
+    hash = hash & hash; // Convert to 32-bit integer
+  }
+  return 20100 + (Math.abs(hash) % 900);
+}
+
+/**
+ * Create PlainRtpTransport for FFmpeg input
+ * Can optionally specify a fixed port (used when SSRC was pre-captured)
+ */
+async function createPlainRtpTransport(roomId, fixedPort = null) {
   const router = await createRouter(roomId);
-  
-  const transport = await router.createPlainTransport({
-    ...config.mediasoup.plainRtpTransport,
-    comedia: true, // Auto-detect remote IP and accept RTP from any source
-  });
-  
+
+  // Clean up existing producers and PlainRTP transports for this room
+  // This prevents accumulation of stale producers when streams restart
+  const room = rooms.get(roomId);
+  if (room && room.producerIds && room.producerIds.length > 0) {
+    console.log(`Cleaning up ${room.producerIds.length} existing producer(s) for room: ${roomId}`);
+    for (const producerId of [...room.producerIds]) {
+      const producerData = producers.get(producerId);
+      if (producerData) {
+        try {
+          producerData.producer.close();
+          producers.delete(producerId);
+          console.log(`  Closed producer: ${producerId}`);
+        } catch (err) {
+          console.warn(`  Failed to close producer ${producerId}: ${err.message}`);
+        }
+      }
+    }
+    room.producerIds = [];
+  }
+
+  // Close existing PlainRTP transports for this room
+  for (const [tid, tdata] of transports.entries()) {
+    if (tdata.roomId === roomId && tdata.type === 'plain') {
+      try {
+        tdata.transport.close();
+        transports.delete(tid);
+        console.log(`  Closed old PlainRTP transport: ${tid}`);
+      } catch (err) {
+        console.warn(`  Failed to close transport ${tid}: ${err.message}`);
+      }
+    }
+  }
+
+  // Create transport with optional fixed port
+  const transportOptions = {
+    listenInfo: {
+      protocol: 'udp',
+      ip: '0.0.0.0',
+    },
+    rtcpMux: true,  // RTP and RTCP on same port
+    comedia: false, // Disable comedia - we'll connect explicitly
+  };
+
+  // Add fixed port if specified
+  if (fixedPort) {
+    transportOptions.listenInfo.port = fixedPort;
+    console.log(`Creating PlainRtpTransport with fixed port: ${fixedPort}`);
+  }
+
+  const transport = await router.createPlainTransport(transportOptions);
+
   const transportId = transport.id;
   transports.set(transportId, { transport, roomId, type: 'plain' });
-  
+
   console.log(`PlainRtpTransport created [room: ${roomId}, transport: ${transportId}]`);
   console.log(`RTP: ${transport.tuple.localIp}:${transport.tuple.localPort}`);
-  
+
   // When rtcpMux is true, rtcpTuple doesn't exist (RTCP is on same port as RTP)
   const rtcpTuple = transport.rtcpTuple;
   if (rtcpTuple) {
@@ -158,13 +220,113 @@ async function createPlainRtpTransport(roomId) {
   } else {
     console.log(`RTCP: muxed (same port as RTP)`);
   }
-  
+
   return {
     id: transportId,
     ip: transport.tuple.localIp,
     port: transport.tuple.localPort,
     rtcpPort: rtcpTuple ? rtcpTuple.localPort : transport.tuple.localPort, // Same port if muxed
   };
+}
+
+/**
+ * Connect PlainRtpTransport to remote endpoint (FFmpeg source)
+ * This must be called BEFORE creating a producer, so the transport knows
+ * where to expect RTP packets from.
+ */
+async function connectPlainTransport(transportId, ip, port, rtcpPort = null) {
+  const transportData = transports.get(transportId);
+  if (!transportData) {
+    throw new Error(`Transport not found: ${transportId}`);
+  }
+
+  const { transport } = transportData;
+
+  // Connect the transport to the remote endpoint
+  // For rtcpMux=true, we don't need rtcpPort
+  const connectParams = { ip, port };
+  if (rtcpPort && rtcpPort !== port) {
+    connectParams.rtcpPort = rtcpPort;
+  }
+
+  await transport.connect(connectParams);
+
+  console.log(`PlainRtpTransport connected [transport: ${transportId}, remote: ${ip}:${port}]`);
+
+  return {
+    connected: true,
+    remoteIp: ip,
+    remotePort: port,
+  };
+}
+
+/**
+ * Capture SSRC from incoming RTP packets on a port using a temporary UDP socket.
+ * This is used to discover the actual SSRC FFmpeg is sending before creating a producer.
+ *
+ * NOTE: This captures packets BEFORE MediaSoup receives them, so MediaSoup transport
+ * must NOT be listening on this port yet, OR we need to use a different approach.
+ *
+ * Better approach: Read SSRC from MediaSoup's warning logs or use transport stats.
+ */
+const dgram = require('dgram');
+
+async function captureSSRC(port, timeoutMs = 5000) {
+  return new Promise((resolve, reject) => {
+    const socket = dgram.createSocket('udp4');
+    let resolved = false;
+
+    const timeout = setTimeout(() => {
+      if (!resolved) {
+        resolved = true;
+        socket.close();
+        resolve(null); // Return null on timeout instead of rejecting
+      }
+    }, timeoutMs);
+
+    socket.on('message', (msg, rinfo) => {
+      if (!resolved && msg.length >= 12) {
+        resolved = true;
+        clearTimeout(timeout);
+
+        // Extract SSRC (big-endian, 32-bit unsigned integer at offset 8)
+        const ssrc = msg.readUInt32BE(8);
+        console.log(`✅ Captured SSRC: ${ssrc} (0x${ssrc.toString(16)}) from ${rinfo.address}:${rinfo.port}`);
+
+        // Close socket and wait a bit before resolving to ensure port is released
+        socket.close(() => {
+          // Add a small delay to ensure OS releases the port
+          setTimeout(() => {
+            console.log(`Socket closed, port ${port} should be released`);
+            resolve(ssrc);
+          }, 100);
+        });
+      }
+    });
+
+    socket.on('error', (err) => {
+      if (!resolved) {
+        resolved = true;
+        clearTimeout(timeout);
+        console.error(`SSRC capture error: ${err.message}`);
+        socket.close();
+        resolve(null);
+      }
+    });
+
+    try {
+      socket.bind(port, '0.0.0.0', () => {
+        console.log(`Listening for RTP packets on port ${port} to capture SSRC...`);
+      });
+    } catch (err) {
+      if (!resolved) {
+        resolved = true;
+        clearTimeout(timeout);
+        console.error(`Failed to bind to port ${port}: ${err.message}`);
+        resolve(null);
+      }
+    }
+  });
 }
 
 /**
@@ -192,11 +354,10 @@ async function createProducer(transportId, kind, rtpParameters) {
     console.warn(`⚠️  Could not enable trace events: ${err.message}`);
   }
   
-  // Listen for trace events
+  // Listen for trace events - just log the type, no JSON serialization
   producer.on('trace', (trace) => {
-    if (trace.type === 'keyframe' || trace.type === 'probation' || trace.type === 'rtp') {
-      console.log(`[TRACE] Producer ${producer.id}:`, JSON.stringify(trace, null, 2));
-    }
+    // Minimal logging to avoid BigInt serialization issues
+    // Trace events firing proves packets are reaching the producer
   });
   
   transport.on('tuple', (tuple) => {
@@ -213,45 +374,50 @@ async function createProducer(transportId, kind, rtpParameters) {
   
   // Log producer and transport stats after a delay to check if packets are being received
   setTimeout(async () => {
+    // Helper to safely convert BigInt to Number
+    const toNumber = (val) => typeof val === 'bigint' ? Number(val) : (val || 0);
+
     try {
       // For PlainRTP, get stats from both transport and producer
       const transportStats = await transport.getStats();
       const producerStats = await producer.getStats();
-      
+
       console.log(`\n=== Stats for Producer ${producer.id} ===`);
       console.log(`Transport stats types: [${transportStats.map(s => s.type).join(', ')}]`);
       console.log(`Producer stats types: [${producerStats.map(s => s.type).join(', ')}]`);
-      
+
       // Find inbound-rtp stats (PlainRTP transport receives RTP, producer consumes it)
       const inboundRtp = [...transportStats, ...producerStats].find(s => s.type === 'inbound-rtp');
       const transportStat = transportStats.find(s => s.type === 'transport');
-      
+
       if (inboundRtp) {
+        const packetsReceived = toNumber(inboundRtp.packetsReceived);
+        const bytesReceived = toNumber(inboundRtp.bytesReceived);
+        const ssrc = inboundRtp.ssrc;
+
         console.log(`✅ Inbound RTP found:`);
-        console.log(`   packetsReceived: ${inboundRtp.packetsReceived || 0}`);
-        console.log(`   bytesReceived: ${inboundRtp.bytesReceived || 0}`);
-        console.log(`   ssrc: ${inboundRtp.ssrc || 'N/A'}`);
+        console.log(`   packetsReceived: ${packetsReceived} (type: ${typeof inboundRtp.packetsReceived})`);
+        console.log(`   bytesReceived: ${bytesReceived}`);
+        console.log(`   ssrc: ${ssrc || 'N/A'}`);
         console.log(`   expected ssrc: ${rtpParameters.encodings?.[0]?.ssrc || 'N/A'}`);
-        
-        if (inboundRtp.ssrc) {
+
+        if (ssrc) {
           const expectedSsrc = rtpParameters.encodings?.[0]?.ssrc;
-          if (expectedSsrc && inboundRtp.ssrc !== expectedSsrc) {
-            console.warn(`⚠️  SSRC MISMATCH! Expected ${expectedSsrc}, got ${inboundRtp.ssrc}`);
+          if (expectedSsrc && ssrc !== expectedSsrc) {
+            console.warn(`⚠️  SSRC MISMATCH! Expected ${expectedSsrc}, got ${ssrc}`);
           } else if (expectedSsrc) {
-            console.log(`✅ SSRC matches: ${inboundRtp.ssrc}`);
+            console.log(`✅ SSRC matches: ${ssrc}`);
           }
         }
-        
-        if ((inboundRtp.packetsReceived || 0) === 0) {
+
+        if (packetsReceived === 0) {
           console.warn(`⚠️  WARNING: No packets received despite FFmpeg running!`);
         } else {
-          console.log(`✅ Producer IS receiving packets (${inboundRtp.packetsReceived} packets)`);
+          console.log(`✅ Producer IS receiving packets (${packetsReceived} packets)`);
         }
       } else {
         console.warn(`⚠️  No inbound-rtp stats found! Producer may not be receiving packets.`);
-        console.log(`Full transport stats:`, JSON.stringify(transportStats, null, 2));
-        console.log(`Full producer stats:`, JSON.stringify(producerStats, null, 2));
-        
+
         // Check transport tuple to verify remote endpoint
         const plainRtpStat = transportStats.find(s => s.type === 'plain-rtp-transport');
         if (plainRtpStat && plainRtpStat.tuple) {
@@ -261,9 +427,14 @@ async function createProducer(transportId, kind, rtpParameters) {
           }
         }
       }
-      
-      if (transportStat) {
-        console.log(`Transport stats:`, JSON.stringify(transportStat, null, 2));
+
+      // Log plain-rtp-transport stats which shows actual bytes received at transport level
+      const plainRtpStat = transportStats.find(s => s.type === 'plain-rtp-transport');
+      if (plainRtpStat) {
+        console.log(`PlainRTP transport stats:`);
+        console.log(`   bytesReceived: ${toNumber(plainRtpStat.bytesReceived)}`);
+        console.log(`   rtpBytesReceived: ${toNumber(plainRtpStat.rtpBytesReceived)}`);
+        console.log(`   rtpRecvBitrate: ${toNumber(plainRtpStat.recvBitrate)}`);
       }
       console.log(`=== End Stats ===\n`);
     } catch (err) {
@@ -393,15 +564,72 @@ wss.on('connection', (ws) => {
         
         case 'createPlainRtpTransport':
           {
-            const { roomId } = payload;
-            const transportInfo = await createPlainRtpTransport(roomId);
+            const { roomId, fixedPort } = payload;
+            const transportInfo = await createPlainRtpTransport(roomId, fixedPort);
             response = {
               type: 'plainRtpTransportCreated',
               transportInfo,
             };
           }
           break;
-        
+
+        case 'getPortForRoom':
+          {
+            // Get the deterministic port for a room (doesn't bind, just returns the port number)
+            const { roomId } = payload;
+            const port = getPortForRoom(roomId);
+            response = {
+              type: 'portForRoom',
+              roomId,
+              port,
+            };
+          }
+          break;
+
+        case 'captureSSRC':
+          {
+            // Capture SSRC from incoming RTP packets on a specific port.
+            // This binds to the port, waits for first packet, extracts SSRC, and closes the socket.
+            // The caller should:
+            // 1. Call getPortForRoom to get the port
+            // 2. Call this (captureSSRC) to start listening - it will wait for packets
+            // 3. In parallel, start FFmpeg sending to this port
+            // 4. This returns when SSRC is captured (or timeout)
+            // 5. Call createPlainRtpTransport with fixedPort
+            // 6. Connect transport and create producer with SSRC
+            const { port, timeoutMs = 8000 } = payload;
+
+            console.log(`Starting SSRC capture on port ${port}...`);
+
+            // Start capturing SSRC on this port
+            const ssrc = await captureSSRC(port, timeoutMs);
+
+            response = {
+              type: 'ssrcCaptured',
+              port,
+              ssrc,
+              success: ssrc !== null,
+            };
+
+            if (ssrc !== null) {
+              console.log(`✅ SSRC captured on port ${port}: ${ssrc}`);
+            } else {
+              console.warn(`⚠️  Failed to capture SSRC on port ${port}`);
+            }
+          }
+          break;
+
+        case 'connectPlainTransport':
+          {
+            const { transportId, ip, port, rtcpPort } = payload;
+            const connectInfo = await connectPlainTransport(transportId, ip, port, rtcpPort);
+            response = {
+              type: 'plainTransportConnected',
+              ...connectInfo,
+            };
+          }
+          break;
+
         case 'getTransportStats':
           {
             const { transportId } = payload;
@@ -475,15 +703,41 @@ wss.on('connection', (ws) => {
               throw new Error(`Producer not found: ${producerId}`);
             }
 
+            // Helper to safely convert BigInt to Number
+            const toNumber = (val) => typeof val === 'bigint' ? Number(val) : (val || 0);
+
             const stats = await producerData.producer.getStats();
             const inboundRtp = stats.find(s => s.type === 'inbound-rtp');
+
+            // Get transport stats - for PlainRtpTransport, this is where the real stats are
+            const transportData = transports.get(producerData.transportId);
+            let rtpPacketsReceived = 0;
+            let rtpBytesReceived = 0;
+
+            if (transportData) {
+              const tStats = await transportData.transport.getStats();
+              const plainRtp = tStats.find(s => s.type === 'plain-rtp-transport');
+              if (plainRtp) {
+                rtpBytesReceived = toNumber(plainRtp.rtpBytesReceived);
+                // Use rtpBytesReceived as proxy for packets (estimate ~1000 bytes per packet)
+                rtpPacketsReceived = Math.floor(rtpBytesReceived / 1000);
+              }
+            }
+
+            // For PlainRtpTransport, producer.getStats() often shows packetsReceived=0
+            // even when transport is receiving RTP data. Use transport stats when
+            // producer stats show 0 packets.
+            const producerPackets = inboundRtp ? toNumber(inboundRtp.packetsReceived) : 0;
+            const packetsReceived = producerPackets > 0 ? producerPackets : rtpPacketsReceived;
+            const producerBytes = inboundRtp ? toNumber(inboundRtp.bytesReceived) : 0;
+            const bytesReceived = producerBytes > 0 ? producerBytes : rtpBytesReceived;
 
             response = {
               type: 'producerStats',
               producerId,
-              packetsReceived: inboundRtp?.packetsReceived || 0,
-              bytesReceived: inboundRtp?.bytesReceived || 0,
-              ready: (inboundRtp?.packetsReceived || 0) > 0,
+              packetsReceived,
+              bytesReceived,
+              ready: packetsReceived > 0,
             };
           }
           break;
@@ -491,35 +745,52 @@ wss.on('connection', (ws) => {
         case 'getAllProducerStats':
           {
             // Get stats for all producers - used by health monitor
+            // Helper to safely convert BigInt to Number
+            const toNumber = (val) => typeof val === 'bigint' ? Number(val) : (val || 0);
+
             const allStats = [];
             for (const [producerId, producerData] of producers.entries()) {
               try {
                 const stats = await producerData.producer.getStats();
                 const inboundRtp = stats.find(s => s.type === 'inbound-rtp');
 
-                // Also get transport stats for more info
+                // Get transport stats - for PlainRtpTransport, this is where the real
+                // receive stats are (producer.getStats() returns empty for plain RTP)
                 const transportData = transports.get(producerData.transportId);
                 let transportStats = null;
+                let rtpPacketsReceived = 0;
+
                 if (transportData) {
                   const tStats = await transportData.transport.getStats();
                   const plainRtp = tStats.find(s => s.type === 'plain-rtp-transport');
                   if (plainRtp) {
+                    const rtpBytes = toNumber(plainRtp.rtpBytesReceived);
                     transportStats = {
-                      bytesReceived: plainRtp.bytesReceived || 0,
-                      rtpBytesReceived: plainRtp.rtpBytesReceived || 0,
-                      recvBitrate: plainRtp.recvBitrate || 0,
+                      bytesReceived: toNumber(plainRtp.bytesReceived),
+                      rtpBytesReceived: rtpBytes,
+                      recvBitrate: toNumber(plainRtp.recvBitrate),
                     };
+                    // Use rtpBytesReceived as proxy for packets (estimate ~1000 bytes per packet)
+                    rtpPacketsReceived = Math.floor(rtpBytes / 1000);
                   }
                 }
+
+                // For PlainRtpTransport, producer.getStats() often shows packetsReceived=0
+                // even when transport is receiving RTP data. Use transport stats when
+                // producer stats show 0 packets.
+                const producerPackets = inboundRtp ? toNumber(inboundRtp.packetsReceived) : 0;
+                const packetsReceived = producerPackets > 0 ? producerPackets : rtpPacketsReceived;
+                const producerBytes = inboundRtp ? toNumber(inboundRtp.bytesReceived) : 0;
+                const bytesReceived = producerBytes > 0 ? producerBytes : toNumber(transportStats?.rtpBytesReceived);
 
                 allStats.push({
                   producerId,
                   roomId: producerData.roomId,
                   transportId: producerData.transportId,
-                  packetsReceived: inboundRtp?.packetsReceived || 0,
-                  bytesReceived: inboundRtp?.bytesReceived || 0,
-                  packetsLost: inboundRtp?.packetsLost || 0,
-                  jitter: inboundRtp?.jitter || 0,
+                  packetsReceived,
+                  bytesReceived,
+                  packetsLost: toNumber(inboundRtp?.packetsLost),
+                  jitter: toNumber(inboundRtp?.jitter),
                   transportStats,
                 });
               } catch (err) {
@@ -569,7 +840,7 @@ wss.on('connection', (ws) => {
             if (transportData) {
               transportData.transport.close();
               transports.delete(transportId);
-              
+
               // Remove producers on this transport
               for (const [pid, pdata] of producers.entries()) {
                 if (pdata.transportId === transportId) {
@@ -580,12 +851,47 @@ wss.on('connection', (ws) => {
                   }
                 }
               }
-              
+
               console.log(`Transport closed: ${transportId}`);
               response = { type: 'transportClosed', status: 'success', message: `Transport ${transportId} closed` };
             } else {
               throw new Error(`Transport not found: ${transportId}`);
             }
+          }
+          break;
+
+        case 'closeTransportsForRoom':
+          {
+            // Close all PlainRTP transports for a room to release ports
+            const { roomId } = payload;
+            let closedCount = 0;
+
+            for (const [tid, tdata] of transports.entries()) {
+              if (tdata.roomId === roomId && tdata.type === 'plain') {
+                try {
+                  tdata.transport.close();
+                  transports.delete(tid);
+                  closedCount++;
+                  console.log(`Closed PlainRTP transport for room ${roomId}: ${tid}`);
+
+                  // Remove producers on this transport
+                  for (const [pid, pdata] of producers.entries()) {
+                    if (pdata.transportId === tid) {
+                      producers.delete(pid);
+                      const room = rooms.get(pdata.roomId);
+                      if (room) {
+                        room.producerIds = room.producerIds.filter(id => id !== pid);
+                      }
+                    }
+                  }
+                } catch (err) {
+                  console.warn(`Failed to close transport ${tid}: ${err.message}`);
+                }
+              }
+            }
+
+            console.log(`Closed ${closedCount} PlainRTP transport(s) for room: ${roomId}`);
+            response = { type: 'transportsClosedForRoom', roomId, closedCount };
           }
           break;
         

@@ -93,7 +93,10 @@
       "Bash(ip neigh:*)",
       "Bash(timeout 3 tcpdump:*)",
       "Bash(timeout 2 tcpdump:*)",
-      "Bash(git rm:*)"
+      "Bash(git rm:*)",
+      "Bash(pgrep:*)",
+      "Bash(timeout 1 tcpdump:*)",
+      "Bash(1)"
     ],
     "deny": [],
     "ask": []
