@@ -41,11 +41,9 @@ services:
       context: ./mediasoup-server
       dockerfile: Dockerfile
     container_name: vas-ms-v2-mediasoup
-    ports:
-      - "3002:3001"
-      - "20000-20999:20000-20999/udp"  # WebRTC UDP ports
-    networks:
-      - vas_net
+    network_mode: host  # Required for WebRTC and RTP traffic
+    environment:
+      MEDIASOUP_ANNOUNCED_IP: 10.30.250.99  # Server's public IP for WebRTC
     healthcheck:
       test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:3001/health"]
       interval: 30s
@@ -59,15 +57,12 @@ services:
       context: ./backend
       dockerfile: Dockerfile
     container_name: vas-ms-v2-backend
-    ports:
-      - "8085:8085"
-    networks:
-      - vas_net
+    network_mode: host  # Required to access RTSP cameras on 172.16.16.x network
     environment:
-      DATABASE_URL: postgresql://vas:vas_password@db:5432/vas_db
-      REDIS_URL: redis://redis:6379
-      MEDIASOUP_URL: ws://mediasoup:3001
-      MEDIASOUP_HOST: mediasoup  # Host for RTP traffic (must resolve to mediasoup container)
+      DATABASE_URL: postgresql://vas:vas_password@127.0.0.1:5433/vas_db
+      REDIS_URL: redis://127.0.0.1:6380
+      MEDIASOUP_URL: ws://127.0.0.1:3001
+      MEDIASOUP_HOST: 127.0.0.1  # Host for RTP traffic (localhost since both use host network)
       # MEDIASOUP_WORKER_OPTIONS removed - using default from settings.py
       MEDIASOUP_RTC_MIN_PORT: 20000
       MEDIASOUP_RTC_MAX_PORT: 20999
@@ -80,15 +75,13 @@ services:
       JWT_ACCESS_TOKEN_EXPIRE_MINUTES: "60"
     volumes:
       - ./backend:/app
-      - recordings:/app/recordings
-      - snapshots:/app/snapshots
+      - recordings:/recordings/hot
+      - snapshots:/snapshots
       - bookmarks:/bookmarks
     depends_on:
       db:
         condition: service_healthy
       redis:
-        condition: service_healthy
-      mediasoup:
         condition: service_healthy
     command: uvicorn main:app --host 0.0.0.0 --port 8085 --reload
     healthcheck:

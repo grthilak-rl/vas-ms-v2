@@ -225,16 +225,68 @@ class MediaSoupClient:
     async def get_producers(self, room_id: str) -> list:
         """
         Get list of producers for a room.
-        
+
         Args:
             room_id: Room/device identifier
-            
+
         Returns:
             List of producer IDs
         """
         response = await self._send_request("getProducers", {"roomId": room_id})
         return response.get("producers", [])
-    
+
+    async def get_producer_stats(self, producer_id: str) -> Dict[str, Any]:
+        """
+        Get producer statistics including packet count.
+
+        Args:
+            producer_id: Producer identifier
+
+        Returns:
+            Dict with packetsReceived, bytesReceived, and ready flag
+        """
+        response = await self._send_request("getProducerStats", {"producerId": producer_id})
+        return {
+            "packetsReceived": response.get("packetsReceived", 0),
+            "bytesReceived": response.get("bytesReceived", 0),
+            "ready": response.get("ready", False),
+        }
+
+    async def wait_for_producer_ready(
+        self,
+        producer_id: str,
+        timeout: float = 5.0,
+        poll_interval: float = 0.3
+    ) -> bool:
+        """
+        Wait for producer to start receiving RTP packets.
+
+        Args:
+            producer_id: Producer identifier
+            timeout: Maximum wait time in seconds
+            poll_interval: Time between polls in seconds
+
+        Returns:
+            True if producer is ready (receiving packets), False if timeout
+        """
+        import time
+        start_time = time.time()
+
+        while time.time() - start_time < timeout:
+            try:
+                stats = await self.get_producer_stats(producer_id)
+                if stats.get("ready", False):
+                    packets = stats.get("packetsReceived", 0)
+                    logger.info(f"Producer {producer_id} ready with {packets} packets received")
+                    return True
+            except Exception as e:
+                logger.warning(f"Error checking producer stats: {e}")
+
+            await asyncio.sleep(poll_interval)
+
+        logger.warning(f"Timeout waiting for producer {producer_id} to receive packets")
+        return False
+
     async def close_producer(self, producer_id: str):
         """
         Close a producer.

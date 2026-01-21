@@ -347,9 +347,10 @@ class RTSPPipeline:
 
             asyncio.create_task(log_ffmpeg(process))
 
-            # Wait for FFmpeg to start sending packets
+            # Brief wait for FFmpeg to initialize - actual readiness is verified by caller
+            # using mediasoup_client.wait_for_producer_ready()
             logger.info("Waiting for FFmpeg to initialize...")
-            await asyncio.sleep(2.0)
+            await asyncio.sleep(0.5)
 
             # Check if process is still running
             if process.returncode is not None:

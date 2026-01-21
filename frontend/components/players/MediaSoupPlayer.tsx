@@ -191,13 +191,38 @@ export default function MediaSoupPlayer({
         log('STEP 6: Getting available producers...', 'info');
         setStatus('Getting producers...');
 
-        // 4. Get available producers
-        const producersResponse = await sendRequest('getProducers', { roomId });
-        const producerIds = producersResponse.producers;
-        log(`STEP 6: Found ${producerIds?.length || 0} producer(s)`, producerIds?.length ? 'success' : 'error');
+        // 4. Get available producers with retry logic
+        // This handles the race condition where the producer might not be immediately available
+        const getProducersWithRetry = async (
+          maxRetries: number = 5,
+          initialDelayMs: number = 500
+        ): Promise<string[]> => {
+          for (let attempt = 0; attempt < maxRetries; attempt++) {
+            if (!mounted) return [];
+
+            const producersResponse = await sendRequest('getProducers', { roomId });
+            const ids = producersResponse.producers;
+
+            if (ids && ids.length > 0) {
+              log(`STEP 6: Found ${ids.length} producer(s) on attempt ${attempt + 1}`, 'success');
+              return ids;
+            }
+
+            if (attempt < maxRetries - 1) {
+              // Exponential backoff: 500, 750, 1125, 1687, 2531ms
+              const delay = Math.floor(initialDelayMs * Math.pow(1.5, attempt));
+              log(`STEP 6: No producers yet (attempt ${attempt + 1}/${maxRetries}), retrying in ${delay}ms...`, 'info');
+              await new Promise(resolve => setTimeout(resolve, delay));
+            }
+          }
+
+          return [];
+        };
+
+        const producerIds = await getProducersWithRetry();
 
         if (!producerIds || producerIds.length === 0) {
-          const errMsg = 'No producers available. Is the stream started?';
+          const errMsg = 'No producers available after retries. Is the stream started?';
           log(`STEP 6: ${errMsg}`, 'error');
           throw new Error(errMsg);
         }

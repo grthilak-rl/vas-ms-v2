@@ -82,7 +82,15 @@
       "Bash(fi)",
       "Bash(docker compose logs:*)",
       "Bash(docker compose:*)",
-      "Bash(TEST_CLIENT_SECRET=test-secret API_URL=http://localhost:8085 python:*)"
+      "Bash(TEST_CLIENT_SECRET=test-secret API_URL=http://localhost:8085 python:*)",
+      "Bash(ssh:*)",
+      "Bash(git commit:*)",
+      "Bash(git pull:*)",
+      "Bash(git stash:*)",
+      "Bash(ip route:*)",
+      "Bash(arping:*)",
+      "Bash(arp:*)",
+      "Bash(ip neigh:*)"
     ],
     "deny": [],
     "ask": []

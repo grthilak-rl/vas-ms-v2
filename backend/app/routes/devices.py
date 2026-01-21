@@ -310,7 +310,22 @@ async def start_device_stream(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=f"Failed to start FFmpeg: {stream_info.get('error')}"
             )
-        
+
+        # Wait for producer to actually receive RTP packets before returning success
+        # This prevents the race condition where frontend connects before FFmpeg is streaming
+        producer_id = video_producer["id"]
+        logger.info(f"Waiting for producer {producer_id} to receive RTP packets...")
+
+        producer_ready = await mediasoup_client.wait_for_producer_ready(
+            producer_id,
+            timeout=8.0,  # 8 seconds max (FFmpeg takes ~0.5s to start, packets should arrive within 1-2s more)
+            poll_interval=0.3
+        )
+
+        if not producer_ready:
+            logger.warning(f"Producer {producer_id} not receiving packets after timeout - stream may have issues")
+            # Don't fail the request - the stream might still work, frontend has retry logic
+
         # Update device as active
         device.is_active = True
 

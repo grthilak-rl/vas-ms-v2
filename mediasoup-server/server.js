@@ -466,7 +466,28 @@ wss.on('connection', (ws) => {
             };
           }
           break;
-        
+
+        case 'getProducerStats':
+          {
+            const { producerId } = payload;
+            const producerData = producers.get(producerId);
+            if (!producerData) {
+              throw new Error(`Producer not found: ${producerId}`);
+            }
+
+            const stats = await producerData.producer.getStats();
+            const inboundRtp = stats.find(s => s.type === 'inbound-rtp');
+
+            response = {
+              type: 'producerStats',
+              producerId,
+              packetsReceived: inboundRtp?.packetsReceived || 0,
+              bytesReceived: inboundRtp?.bytesReceived || 0,
+              ready: (inboundRtp?.packetsReceived || 0) > 0,
+            };
+          }
+          break;
+
         case 'closeProducer':
           {
             const { producerId } = payload;
