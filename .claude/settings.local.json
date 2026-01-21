@@ -90,7 +90,10 @@
       "Bash(ip route:*)",
       "Bash(arping:*)",
       "Bash(arp:*)",
-      "Bash(ip neigh:*)"
+      "Bash(ip neigh:*)",
+      "Bash(timeout 3 tcpdump:*)",
+      "Bash(timeout 2 tcpdump:*)",
+      "Bash(git rm:*)"
     ],
     "deny": [],
     "ask": []

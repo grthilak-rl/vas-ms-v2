@@ -488,6 +488,58 @@ wss.on('connection', (ws) => {
           }
           break;
 
+        case 'getAllProducerStats':
+          {
+            // Get stats for all producers - used by health monitor
+            const allStats = [];
+            for (const [producerId, producerData] of producers.entries()) {
+              try {
+                const stats = await producerData.producer.getStats();
+                const inboundRtp = stats.find(s => s.type === 'inbound-rtp');
+
+                // Also get transport stats for more info
+                const transportData = transports.get(producerData.transportId);
+                let transportStats = null;
+                if (transportData) {
+                  const tStats = await transportData.transport.getStats();
+                  const plainRtp = tStats.find(s => s.type === 'plain-rtp-transport');
+                  if (plainRtp) {
+                    transportStats = {
+                      bytesReceived: plainRtp.bytesReceived || 0,
+                      rtpBytesReceived: plainRtp.rtpBytesReceived || 0,
+                      recvBitrate: plainRtp.recvBitrate || 0,
+                    };
+                  }
+                }
+
+                allStats.push({
+                  producerId,
+                  roomId: producerData.roomId,
+                  transportId: producerData.transportId,
+                  packetsReceived: inboundRtp?.packetsReceived || 0,
+                  bytesReceived: inboundRtp?.bytesReceived || 0,
+                  packetsLost: inboundRtp?.packetsLost || 0,
+                  jitter: inboundRtp?.jitter || 0,
+                  transportStats,
+                });
+              } catch (err) {
+                console.warn(`Failed to get stats for producer ${producerId}: ${err.message}`);
+                allStats.push({
+                  producerId,
+                  roomId: producerData.roomId,
+                  error: err.message,
+                });
+              }
+            }
+
+            response = {
+              type: 'allProducerStats',
+              stats: allStats,
+              timestamp: Date.now(),
+            };
+          }
+          break;
+
         case 'closeProducer':
           {
             const { producerId } = payload;

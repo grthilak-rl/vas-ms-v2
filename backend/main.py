@@ -103,11 +103,27 @@ async def lifespan(app: FastAPI):
     # Seed default client for frontend/API access
     await seed_default_client()
 
+    # Start stream health monitor
+    from app.services.stream_health_monitor import stream_health_monitor
+    from app.services.stream_restart_handler import restart_stream_handler
+
+    # Configure restart callback
+    stream_health_monitor.set_restart_callback(restart_stream_handler)
+
+    # Start the health monitor
+    await stream_health_monitor.start()
+    logger.info("Stream health monitor started")
+
     logger.info("VAS Backend Application started successfully")
 
     yield
 
     logger.info("Shutting down VAS Backend Application...")
+
+    # Stop stream health monitor
+    await stream_health_monitor.stop()
+    logger.info("Stream health monitor stopped")
+
     await engine.dispose()
 
 # Create FastAPI app
@@ -193,7 +209,8 @@ async def health_check_detailed():
     """Detailed health check endpoint."""
     from database import engine
     from app.services.websocket_manager import websocket_manager
-    
+    from app.services.stream_health_monitor import stream_health_monitor
+
     # Check database
     db_healthy = False
     try:
@@ -202,7 +219,7 @@ async def health_check_detailed():
             db_healthy = True
     except Exception as e:
         logger.error(f"Database health check failed: {e}")
-    
+
     # Check Redis (if configured)
     redis_healthy = False
     try:
@@ -210,12 +227,15 @@ async def health_check_detailed():
         redis_healthy = True
     except Exception:
         pass
-    
+
     # Check WebSocket manager
     ws_healthy = websocket_manager is not None
-    
+
+    # Get stream health monitor status
+    health_monitor_status = stream_health_monitor.get_status()
+
     overall_status = "healthy" if all([db_healthy, ws_healthy]) else "degraded"
-    
+
     return {
         "status": overall_status,
         "service": "VAS Backend",
@@ -225,6 +245,23 @@ async def health_check_detailed():
             "redis": redis_healthy,
             "websocket": ws_healthy
         },
+        "stream_health_monitor": health_monitor_status,
+        "timestamp": datetime.now().isoformat()
+    }
+
+
+@app.get("/health/streams")
+async def stream_health_status():
+    """Get detailed stream health status."""
+    from app.services.stream_health_monitor import stream_health_monitor
+    from app.services.rtsp_pipeline import rtsp_pipeline
+
+    health_status = stream_health_monitor.get_status()
+    active_streams = await rtsp_pipeline.list_active_streams()
+
+    return {
+        "health_monitor": health_status,
+        "active_streams": active_streams,
         "timestamp": datetime.now().isoformat()
     }
 

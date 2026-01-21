@@ -92,6 +92,7 @@ async def start_device_stream(
     from sqlalchemy import select
     from app.services.rtsp_pipeline import rtsp_pipeline
     from app.services.mediasoup_client import mediasoup_client
+    from app.services.stream_health_monitor import stream_health_monitor
     from loguru import logger
     
     # Get device
@@ -404,6 +405,10 @@ async def start_device_stream(
 
         await db.commit()
 
+        # Register stream with health monitor for continuous monitoring
+        stream_health_monitor.register_stream(room_id, video_producer["id"])
+        logger.info(f"Registered stream with health monitor: room={room_id}, producer={video_producer['id']}")
+
         return {
             "status": "success",
             "device_id": str(device_id),
@@ -500,6 +505,7 @@ async def stop_device_stream(
     """Stop streaming from a device."""
     from sqlalchemy import select
     from app.services.rtsp_pipeline import rtsp_pipeline
+    from app.services.stream_health_monitor import stream_health_monitor
     from loguru import logger
     
     # Get device
@@ -516,7 +522,12 @@ async def stop_device_stream(
     
     # Stop RTSP stream
     try:
-        stopped = await rtsp_pipeline.stop_stream(str(device_id))
+        room_id = str(device_id)
+        stopped = await rtsp_pipeline.stop_stream(room_id)
+
+        # Unregister from health monitor
+        stream_health_monitor.unregister_stream(room_id)
+        logger.info(f"Unregistered stream from health monitor: room={room_id}")
 
         if stopped:
             # Update device as inactive

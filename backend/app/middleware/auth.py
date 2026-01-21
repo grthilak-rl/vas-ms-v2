@@ -37,6 +37,8 @@ def _get_cors_headers(request: Request) -> dict:
 # (These may still require JWT Bearer token for V2 endpoints)
 EXEMPT_PATHS = [
     "/health",
+    "/health/detailed",
+    "/health/streams",
     "/docs",
     "/openapi.json",
     "/redoc",

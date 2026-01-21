@@ -287,10 +287,24 @@ class MediaSoupClient:
         logger.warning(f"Timeout waiting for producer {producer_id} to receive packets")
         return False
 
+    async def get_all_producer_stats(self) -> Dict[str, Any]:
+        """
+        Get statistics for all producers.
+        Used by health monitor for efficient batch checking.
+
+        Returns:
+            Dict with 'stats' list containing producer stats and 'timestamp'
+        """
+        response = await self._send_request("getAllProducerStats", {})
+        return {
+            "stats": response.get("stats", []),
+            "timestamp": response.get("timestamp", 0),
+        }
+
     async def close_producer(self, producer_id: str):
         """
         Close a producer.
-        
+
         Args:
             producer_id: Producer identifier
         """
