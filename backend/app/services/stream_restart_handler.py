@@ -173,10 +173,9 @@ async def restart_stream_handler(room_id: str) -> bool:
 
             return True
         else:
-            logger.warning(f"Producer not receiving packets after restart: room={room_id}")
-            # Don't mark as failed immediately - health monitor will check again
-            stream_health_monitor.register_stream(room_id, producer_id)
-            return True  # Restart was initiated, let health monitor track it
+            logger.error(f"Producer not receiving packets after restart: room={room_id} - device may be unreachable")
+            # Return False so health monitor knows restart failed and can mark device as failed
+            return False
 
     except Exception as e:
         logger.error(f"Error restarting stream for room {room_id}: {e}")

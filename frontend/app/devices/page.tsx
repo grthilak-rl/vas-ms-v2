@@ -186,13 +186,30 @@ export default function DevicesPage() {
                       <div className="text-sm text-gray-900 font-mono">{device.rtsp_url}</div>
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap">
-                      <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
-                        device.is_active 
-                          ? 'bg-green-100 text-green-800' 
-                          : 'bg-gray-100 text-gray-800'
-                      }`}>
-                        {device.is_active ? 'Active' : 'Inactive'}
-                      </span>
+                      {(() => {
+                        // Determine status based on is_active and stream_state
+                        const streamState = device.stream_state;
+                        let statusText = 'Inactive';
+                        let statusClass = 'bg-gray-100 text-gray-800';
+
+                        if (device.is_active && streamState === 'live') {
+                          statusText = 'Active';
+                          statusClass = 'bg-green-100 text-green-800';
+                        } else if (streamState === 'error') {
+                          statusText = 'Error';
+                          statusClass = 'bg-red-100 text-red-800';
+                        } else if (device.is_active) {
+                          // is_active but not live - may be initializing or in an intermediate state
+                          statusText = 'Starting...';
+                          statusClass = 'bg-yellow-100 text-yellow-800';
+                        }
+
+                        return (
+                          <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${statusClass}`}>
+                            {statusText}
+                          </span>
+                        );
+                      })()}
                     </td>
                     <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
                       {new Date(device.created_at).toLocaleDateString()}
@@ -225,7 +242,7 @@ export default function DevicesPage() {
 
       {/* Add Device Modal */}
       {isModalOpen && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-[60]">
           <div className="bg-white rounded-lg shadow-xl max-w-md w-full mx-4">
             <div className="px-6 py-4 border-b border-gray-200">
               <h2 className="text-xl font-bold text-gray-900">Add New Device</h2>
@@ -295,7 +312,7 @@ export default function DevicesPage() {
 
       {/* Edit Device Modal */}
       {isEditModalOpen && editingDevice && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-[60]">
           <div className="bg-white rounded-lg shadow-xl max-w-md w-full mx-4">
             <div className="px-6 py-4 border-b border-gray-200">
               <h2 className="text-xl font-bold text-gray-900">Edit Device</h2>

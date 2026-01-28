@@ -21,6 +21,7 @@ export interface Device {
   location?: string;
   created_at: string;
   updated_at: string;
+  stream_state?: string | null;  // Stream state: live, error, stopped, etc.
 }
 
 export interface Stream {

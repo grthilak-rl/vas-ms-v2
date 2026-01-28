@@ -32,7 +32,8 @@ class DeviceResponse(BaseModel):
     location: Optional[str]
     created_at: datetime
     updated_at: Optional[datetime]
-    
+    stream_state: Optional[str] = None  # Stream state: live, error, stopped, etc.
+
     class Config:
         from_attributes = True
 

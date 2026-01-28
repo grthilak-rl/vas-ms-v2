@@ -11,6 +11,7 @@ import {
   V2Bookmark
 } from '@/lib/api-v2';
 import { getDevices, Device } from '@/lib/api';
+import { ArrowPathIcon, TrashIcon, ArrowDownTrayIcon, XMarkIcon, BookmarkIcon, VideoCameraIcon, ClockIcon } from '@heroicons/react/24/outline';
 
 export default function BookmarksPage() {
   const [bookmarks, setBookmarks] = useState<V2Bookmark[]>([]);
@@ -231,15 +232,13 @@ export default function BookmarksPage() {
           onClick={() => loadBookmarks()}
           className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors flex items-center gap-2"
         >
-          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-          </svg>
+          <ArrowPathIcon className="w-5 h-5" />
           Refresh
         </button>
       </div>
 
       {/* Filters */}
-      <div className="bg-white shadow-sm rounded-lg border border-gray-200 p-4 space-y-4">
+      <div className="bg-white shadow-sm rounded-lg border border-gray-200 p-6 space-y-4">
         <div className="flex flex-wrap items-center gap-4">
           {/* Device Filter */}
           <div className="flex items-center gap-2">
@@ -365,9 +364,7 @@ export default function BookmarksPage() {
       {!loading && !error && bookmarks.length === 0 && (
         <div className="bg-white shadow-sm rounded-lg border border-gray-200 p-12">
           <div className="text-center">
-            <svg className="w-16 h-16 text-gray-400 mx-auto mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M5 5a2 2 0 012-2h10a2 2 0 012 2v16l-7-3.5L5 21V5z" />
-            </svg>
+            <BookmarkIcon className="w-16 h-16 text-gray-400 mx-auto mb-4" />
             <h3 className="text-lg font-medium text-gray-900 mb-2">No bookmarks found</h3>
             <p className="text-gray-600">
               Create bookmarks from live streams or historical recordings to see them here.
@@ -411,9 +408,7 @@ export default function BookmarksPage() {
                   </div>
                 ) : (
                   <div className="w-full h-full flex items-center justify-center bg-gray-800">
-                    <svg className="w-12 h-12 text-gray-400" fill="currentColor" viewBox="0 0 20 20">
-                      <path d="M2 6a2 2 0 012-2h6a2 2 0 012 2v8a2 2 0 01-2 2H4a2 2 0 01-2-2V6zM14.553 7.106A1 1 0 0014 8v4a1 1 0 00.553.894l2 1A1 1 0 0018 13V7a1 1 0 00-1.447-.894l-2 1z" />
-                    </svg>
+                    <VideoCameraIcon className="w-12 h-12 text-gray-400" />
                   </div>
                 )}
 
@@ -435,23 +430,30 @@ export default function BookmarksPage() {
                 {/* Source Badge */}
                 <div className="absolute top-2 left-2 flex gap-2" style={{ zIndex: 10 }}>
                   {bookmark.source === 'ai_generated' ? (
-                    <span className="px-2 py-1 rounded-md text-xs font-medium shadow-lg bg-purple-600 text-white flex items-center gap-1">
-                      🤖 AI Generated
+                    <span className="px-2 py-1 rounded-lg text-xs font-medium shadow-lg bg-purple-600 text-white flex items-center gap-1.5">
+                      <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
+                        <path d="M10 2a1 1 0 011 1v1.323l3.954 1.582 1.599-.8a1 1 0 01.894 1.79l-1.233.616 1.738 5.42a1 1 0 01-.285 1.05A3.989 3.989 0 0115 15a3.989 3.989 0 01-2.667-1.019 1 1 0 01-.285-1.05l1.715-5.349L11 6.477V16h2a1 1 0 110 2H7a1 1 0 110-2h2V6.477L6.237 7.582l1.715 5.349a1 1 0 01-.285 1.05A3.989 3.989 0 015 15a3.989 3.989 0 01-2.667-1.019 1 1 0 01-.285-1.05l1.738-5.42-1.233-.617a1 1 0 01.894-1.788l1.599.799L9 4.323V3a1 1 0 011-1z" />
+                      </svg>
+                      AI Generated
                     </span>
                   ) : (
-                    <span className={`px-2 py-1 rounded-md text-xs font-medium shadow-lg ${
+                    <span className={`px-2 py-1 rounded-lg text-xs font-medium shadow-lg flex items-center gap-1.5 ${
                       bookmark.source === 'live'
                         ? 'bg-red-600 text-white'
                         : 'bg-blue-600 text-white'
                     }`}>
-                      {bookmark.source === 'live' ? '🔴 Live' : '📼 Historical'}
+                      {bookmark.source === 'live' ? (
+                        <><span className="w-2 h-2 bg-white rounded-full animate-pulse"></span>Live</>
+                      ) : (
+                        <><span className="w-2 h-2 bg-white rounded-full"></span>Historical</>
+                      )}
                     </span>
                   )}
                 </div>
 
                 {/* Duration Badge */}
                 <div className="absolute top-2 right-2" style={{ zIndex: 10 }}>
-                  <span className="px-2 py-1 bg-black bg-opacity-75 text-white rounded-md text-xs font-medium">
+                  <span className="px-2 py-1 bg-black bg-opacity-75 text-white rounded-lg text-xs font-medium">
                     {bookmark.duration_seconds}s
                   </span>
                 </div>
@@ -462,7 +464,7 @@ export default function BookmarksPage() {
                 {/* Event Type Badge */}
                 {bookmark.event_type && (
                   <div className="flex gap-1">
-                    <span className="px-2 py-0.5 bg-gray-100 text-gray-800 text-xs rounded-md font-medium">
+                    <span className="px-2 py-0.5 bg-gray-100 text-gray-800 text-xs rounded-lg font-medium">
                       {bookmark.event_type}
                     </span>
                   </div>
@@ -567,9 +569,7 @@ export default function BookmarksPage() {
 
                 {/* Timestamp */}
                 <div className="flex items-center gap-2 text-xs text-gray-500">
-                  <svg className="w-3.5 h-3.5 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
-                    <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm1-12a1 1 0 10-2 0v4a1 1 0 00.293.707l2.828 2.829a1 1 0 101.415-1.415L11 9.586V6z" clipRule="evenodd" />
-                  </svg>
+                  <ClockIcon className="w-3.5 h-3.5 flex-shrink-0" />
                   <span className="truncate" title={formatTimestamp(bookmark.center_timestamp)}>
                     {new Date(bookmark.center_timestamp).toLocaleDateString('en-US', {
                       month: 'short',
@@ -587,7 +587,7 @@ export default function BookmarksPage() {
                     handleDelete(bookmark.id);
                   }}
                   disabled={deletingId === bookmark.id}
-                  className="w-full px-3 py-2 bg-red-50 text-red-600 text-sm rounded-md hover:bg-red-100 transition-colors disabled:bg-gray-100 disabled:text-gray-400 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                  className="w-full px-3 py-2 bg-red-50 text-red-600 text-sm rounded-lg hover:bg-red-100 transition-colors disabled:bg-gray-100 disabled:text-gray-400 disabled:cursor-not-allowed flex items-center justify-center gap-2"
                 >
                   {deletingId === bookmark.id ? (
                     <>
@@ -599,9 +599,7 @@ export default function BookmarksPage() {
                     </>
                   ) : (
                     <>
-                      <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
-                        <path fillRule="evenodd" d="M9 2a1 1 0 00-.894.553L7.382 4H4a1 1 0 000 2v10a2 2 0 002 2h8a2 2 0 002-2V6a1 1 0 100-2h-3.382l-.724-1.447A1 1 0 0011 2H9zM7 8a1 1 0 012 0v6a1 1 0 11-2 0V8zm5-1a1 1 0 00-1 1v6a1 1 0 102 0V8a1 1 0 00-1-1z" clipRule="evenodd" />
-                      </svg>
+                      <TrashIcon className="w-4 h-4" />
                       Delete
                     </>
                   )}
@@ -615,7 +613,7 @@ export default function BookmarksPage() {
       {/* Video Player Modal */}
       {viewingBookmark && (
         <div
-          className="fixed inset-0 bg-black bg-opacity-90 z-50 flex items-center justify-center p-4"
+          className="fixed inset-0 bg-black bg-opacity-90 z-[60] flex items-center justify-center p-4"
           onClick={handleCloseModal}
         >
           <div
@@ -629,16 +627,23 @@ export default function BookmarksPage() {
                 <div className="flex items-center gap-3 mt-1">
                   <p className="text-sm text-gray-300">{formatTimestamp(viewingBookmark.center_timestamp)}</p>
                   {viewingBookmark.source === 'ai_generated' ? (
-                    <span className="px-2 py-0.5 rounded text-xs font-medium bg-purple-600 text-white">
-                      🤖 AI Generated
+                    <span className="px-2 py-0.5 rounded-lg text-xs font-medium bg-purple-600 text-white flex items-center gap-1">
+                      <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
+                        <path d="M10 2a1 1 0 011 1v1.323l3.954 1.582 1.599-.8a1 1 0 01.894 1.79l-1.233.616 1.738 5.42a1 1 0 01-.285 1.05A3.989 3.989 0 0115 15a3.989 3.989 0 01-2.667-1.019 1 1 0 01-.285-1.05l1.715-5.349L11 6.477V16h2a1 1 0 110 2H7a1 1 0 110-2h2V6.477L6.237 7.582l1.715 5.349a1 1 0 01-.285 1.05A3.989 3.989 0 015 15a3.989 3.989 0 01-2.667-1.019 1 1 0 01-.285-1.05l1.738-5.42-1.233-.617a1 1 0 01.894-1.788l1.599.799L9 4.323V3a1 1 0 011-1z" />
+                      </svg>
+                      AI
                     </span>
                   ) : (
-                    <span className={`px-2 py-0.5 rounded text-xs font-medium ${
+                    <span className={`px-2 py-0.5 rounded-lg text-xs font-medium flex items-center gap-1 ${
                       viewingBookmark.source === 'live'
                         ? 'bg-red-600 text-white'
                         : 'bg-blue-600 text-white'
                     }`}>
-                      {viewingBookmark.source === 'live' ? '🔴 Live' : '📼 Historical'}
+                      {viewingBookmark.source === 'live' ? (
+                        <><span className="w-1.5 h-1.5 bg-white rounded-full animate-pulse"></span>Live</>
+                      ) : (
+                        <><span className="w-1.5 h-1.5 bg-white rounded-full"></span>Historical</>
+                      )}
                     </span>
                   )}
                   {viewingBookmark.event_type && (
@@ -677,7 +682,7 @@ export default function BookmarksPage() {
                       handleDownload(viewingBookmark);
                     }}
                     disabled={downloadingId === viewingBookmark.id}
-                    className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-400 rounded-md transition-colors flex items-center gap-2"
+                    className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-400 rounded-lg transition-colors flex items-center gap-2"
                   >
                     {downloadingId === viewingBookmark.id ? (
                       <>
@@ -689,9 +694,7 @@ export default function BookmarksPage() {
                       </>
                     ) : (
                       <>
-                        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
-                        </svg>
+                        <ArrowDownTrayIcon className="w-5 h-5" />
                         Download
                       </>
                     )}
@@ -703,9 +706,7 @@ export default function BookmarksPage() {
                   className="text-gray-300 hover:text-white transition-colors p-2"
                   title="Close (ESC)"
                 >
-                  <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                  </svg>
+                  <XMarkIcon className="w-6 h-6" />
                 </button>
               </div>
             </div>

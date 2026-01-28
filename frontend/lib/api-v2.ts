@@ -545,6 +545,217 @@ export async function getAllStreamsHealth(): Promise<any> {
 }
 
 // ============================================================================
+// SYSTEM MONITORING ENDPOINTS
+// ============================================================================
+
+export interface SystemResources {
+  timestamp: string;
+  disk: {
+    filesystem: {
+      total_bytes: number;
+      used_bytes: number;
+      free_bytes: number;
+      percent_used: number;
+      total_gb: number;
+      used_gb: number;
+      free_gb: number;
+    };
+    vas_storage: {
+      recordings_bytes: number;
+      recordings_gb: number;
+      snapshots_bytes: number;
+      snapshots_mb: number;
+      bookmarks_bytes: number;
+      bookmarks_mb: number;
+      total_bytes: number;
+      total_gb: number;
+    };
+    status: 'healthy' | 'elevated' | 'warning' | 'critical' | 'unknown';
+  };
+  cpu: {
+    percent: number;
+    count_physical: number;
+    count_logical: number;
+    per_cpu: number[];
+    load_average: {
+      '1min': number;
+      '5min': number;
+      '15min': number;
+    };
+    status: 'healthy' | 'elevated' | 'warning' | 'critical' | 'unknown';
+  };
+  memory: {
+    ram: {
+      total_bytes: number;
+      available_bytes: number;
+      used_bytes: number;
+      percent: number;
+      total_gb: number;
+      available_gb: number;
+      used_gb: number;
+    };
+    swap: {
+      total_bytes: number;
+      used_bytes: number;
+      free_bytes: number;
+      percent: number;
+      total_gb: number;
+      used_gb: number;
+    };
+    status: 'healthy' | 'elevated' | 'warning' | 'critical' | 'unknown';
+  };
+  network: {
+    bytes_sent: number;
+    bytes_recv: number;
+    packets_sent: number;
+    packets_recv: number;
+    bytes_sent_gb: number;
+    bytes_recv_gb: number;
+    errors_in: number;
+    errors_out: number;
+    drop_in: number;
+    drop_out: number;
+  };
+  overall_status: 'healthy' | 'elevated' | 'warning' | 'critical' | 'degraded';
+}
+
+export interface StreamResource {
+  stream_id: string;
+  ffmpeg: {
+    pid: number | null;
+    cpu_percent: number;
+    memory_mb: number;
+    status: string;
+  };
+  storage: {
+    recordings_bytes: number;
+    recordings_mb: number;
+    recordings_gb: number;
+  };
+  uptime_seconds: number;
+}
+
+export interface SystemStats {
+  counts: {
+    devices: number;
+    streams: {
+      total: number;
+      active: number;
+      by_state: Record<string, number>;
+    };
+    bookmarks: number;
+    snapshots: number;
+  };
+  resources: {
+    disk: {
+      filesystem_percent: number;
+      filesystem_used_gb: number;
+      filesystem_total_gb: number;
+      filesystem_free_gb: number;
+      vas_storage_gb: number;
+      recordings_gb: number;
+      status: string;
+    };
+    cpu: {
+      percent: number;
+      load_1min: number;
+      status: string;
+    };
+    memory: {
+      percent: number;
+      used_gb: number;
+      total_gb: number;
+      status: string;
+    };
+    ffmpeg: {
+      total_processes: number;
+      total_cpu_percent: number;
+      total_memory_mb: number;
+    };
+  };
+  streams: StreamResource[];
+  overall_status: string;
+}
+
+/**
+ * Get comprehensive system resource metrics
+ */
+export async function getSystemResources(): Promise<SystemResources> {
+  const response = await authFetch('/v2/system/resources');
+
+  if (!response.ok) {
+    throw new Error('Failed to fetch system resources');
+  }
+
+  return response.json();
+}
+
+/**
+ * Get aggregate system statistics for dashboard
+ */
+export async function getSystemStats(): Promise<SystemStats> {
+  const response = await authFetch('/v2/system/stats');
+
+  if (!response.ok) {
+    throw new Error('Failed to fetch system stats');
+  }
+
+  return response.json();
+}
+
+/**
+ * Get disk usage details
+ */
+export async function getDiskUsage(): Promise<SystemResources['disk']> {
+  const response = await authFetch('/v2/system/resources/disk');
+
+  if (!response.ok) {
+    throw new Error('Failed to fetch disk usage');
+  }
+
+  return response.json();
+}
+
+/**
+ * Get CPU usage details
+ */
+export async function getCpuUsage(): Promise<SystemResources['cpu']> {
+  const response = await authFetch('/v2/system/resources/cpu');
+
+  if (!response.ok) {
+    throw new Error('Failed to fetch CPU usage');
+  }
+
+  return response.json();
+}
+
+/**
+ * Get memory usage details
+ */
+export async function getMemoryUsage(): Promise<SystemResources['memory']> {
+  const response = await authFetch('/v2/system/resources/memory');
+
+  if (!response.ok) {
+    throw new Error('Failed to fetch memory usage');
+  }
+
+  return response.json();
+}
+
+/**
+ * Get per-stream resource usage
+ */
+export async function getPerStreamResources(): Promise<StreamResource[]> {
+  const response = await authFetch('/v2/system/resources/streams');
+
+  if (!response.ok) {
+    throw new Error('Failed to fetch per-stream resources');
+  }
+
+  return response.json();
+}
+
+// ============================================================================
 // V1 API WRAPPERS (with JWT auth for compatibility)
 // ============================================================================
 

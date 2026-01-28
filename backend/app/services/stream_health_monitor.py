@@ -301,6 +301,8 @@ class StreamHealthMonitor:
                     f"Stream marked as FAILED after {attempts} restart attempts: room={room_id}"
                 )
                 self._failed_streams.add(room_id)
+                # Update device status to inactive since stream has failed
+                await self._update_device_status(room_id, is_active=False)
             return
 
         # Increment restart attempts
@@ -324,10 +326,50 @@ class StreamHealthMonitor:
                     logger.info(f"Stream restart initiated successfully: room={room_id}")
                 else:
                     logger.error(f"Stream restart failed: room={room_id}")
+                    # If restart fails, mark the stream as failed and update device status
+                    if self._restart_attempts.get(room_id, 0) >= self.max_restart_attempts:
+                        self._failed_streams.add(room_id)
+                        await self._update_device_status(room_id, is_active=False)
             except Exception as e:
                 logger.error(f"Error triggering stream restart: room={room_id}, error={e}")
         else:
             logger.warning("No restart callback configured - cannot restart stream")
+
+    async def _update_device_status(self, room_id: str, is_active: bool):
+        """Update device is_active status in the database."""
+        try:
+            from database import AsyncSessionLocal
+            from app.models import Device
+            from app.models.stream import Stream, StreamState
+            from sqlalchemy import select
+            from uuid import UUID
+
+            async with AsyncSessionLocal() as db:
+                # Update device is_active status
+                result = await db.execute(
+                    select(Device).where(Device.id == UUID(room_id))
+                )
+                device = result.scalar_one_or_none()
+
+                if device:
+                    device.is_active = is_active
+                    logger.info(f"Updated device {room_id} is_active={is_active}")
+
+                    # Also update the stream state to ERROR if deactivating
+                    if not is_active:
+                        stream_query = select(Stream).where(Stream.camera_id == UUID(room_id))
+                        stream_result = await db.execute(stream_query)
+                        v2_stream = stream_result.scalar_one_or_none()
+                        if v2_stream:
+                            v2_stream.state = StreamState.ERROR
+                            logger.info(f"Updated stream {v2_stream.id} state to ERROR")
+
+                    await db.commit()
+                else:
+                    logger.warning(f"Device not found for room_id={room_id}")
+
+        except Exception as e:
+            logger.error(f"Error updating device status: {e}")
 
 
 # Global health monitor instance

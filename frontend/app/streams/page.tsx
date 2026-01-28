@@ -508,7 +508,7 @@ export default function StreamsPage() {
                   <button
                     onClick={() => handleStartStream(device.id)}
                     disabled={loading[device.id] || activeStreams[device.id]}
-                    className="flex-1 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed text-white px-4 py-2 rounded-md text-sm font-medium flex items-center justify-center gap-2 transition-colors"
+                    className="flex-1 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed text-white px-4 py-2 rounded-lg text-sm font-medium flex items-center justify-center gap-2 transition-colors"
                   >
                     {loading[device.id] && !activeStreams[device.id] ? (
                       <>
@@ -540,16 +540,16 @@ export default function StreamsPage() {
                       capturingSnapshot[device.id] ||
                       snapshotSuccess[device.id]
                     }
-                    className={`flex-1 px-4 py-2 rounded-md text-sm font-medium flex items-center justify-center gap-2 transition-colors ${
+                    className={`flex-1 px-4 py-2 rounded-lg text-sm font-medium flex items-center justify-center gap-2 transition-colors ${
                       snapshotSuccess[device.id]
-                        ? 'bg-green-500 text-white cursor-default'
-                        : 'bg-green-600 hover:bg-green-700 disabled:bg-gray-400 disabled:cursor-not-allowed text-white'
+                        ? 'bg-green-100 text-green-700 cursor-default border border-green-300'
+                        : 'border border-gray-300 text-gray-700 hover:bg-gray-50 disabled:bg-gray-100 disabled:text-gray-400 disabled:cursor-not-allowed disabled:border-gray-200'
                     }`}
                     title={playerModes[device.id] === 'historical' ? 'Capture snapshot from historical position' : 'Capture snapshot from live stream'}
                   >
                     {capturingSnapshot[device.id] ? (
                       <>
-                        <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
+                        <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-gray-500"></div>
                         Capturing...
                       </>
                     ) : snapshotSuccess[device.id] ? (
@@ -576,16 +576,16 @@ export default function StreamsPage() {
                       capturingBookmark[device.id] ||
                       bookmarkSuccess[device.id]
                     }
-                    className={`flex-1 px-4 py-2 rounded-md text-sm font-medium flex items-center justify-center gap-2 transition-colors ${
+                    className={`flex-1 px-4 py-2 rounded-lg text-sm font-medium flex items-center justify-center gap-2 transition-colors ${
                       bookmarkSuccess[device.id]
-                        ? 'bg-purple-500 text-white cursor-default'
-                        : 'bg-purple-600 hover:bg-purple-700 disabled:bg-gray-400 disabled:cursor-not-allowed text-white'
+                        ? 'bg-purple-100 text-purple-700 cursor-default border border-purple-300'
+                        : 'border border-gray-300 text-gray-700 hover:bg-gray-50 disabled:bg-gray-100 disabled:text-gray-400 disabled:cursor-not-allowed disabled:border-gray-200'
                     }`}
                     title={playerModes[device.id] === 'historical' ? 'Capture 6-second bookmark from historical position (±3s)' : 'Capture 6-second bookmark from live stream (last 6s)'}
                   >
                     {capturingBookmark[device.id] ? (
                       <>
-                        <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
+                        <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-gray-500"></div>
                         Capturing...
                       </>
                     ) : bookmarkSuccess[device.id] ? (
@@ -608,7 +608,7 @@ export default function StreamsPage() {
                   <button
                     onClick={() => handleStopStream(device.id)}
                     disabled={loading[device.id] || (!device.is_active && !activeStreams[device.id])}
-                    className="flex-1 bg-red-600 hover:bg-red-700 disabled:bg-gray-400 disabled:cursor-not-allowed text-white px-4 py-2 rounded-md text-sm font-medium flex items-center justify-center gap-2 transition-colors"
+                    className="flex-1 border border-red-300 text-red-600 hover:bg-red-50 disabled:bg-gray-100 disabled:text-gray-400 disabled:cursor-not-allowed disabled:border-gray-200 px-4 py-2 rounded-lg text-sm font-medium flex items-center justify-center gap-2 transition-colors"
                   >
                     {loading[device.id] && (device.is_active || activeStreams[device.id]) ? (
                       <>

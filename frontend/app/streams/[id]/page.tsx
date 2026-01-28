@@ -118,7 +118,7 @@ export default function StreamViewPage() {
             <div className="space-y-2">
               <button 
                 onClick={() => router.push('/devices')}
-                className="w-full bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-md text-sm font-medium"
+                className="w-full bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-medium"
               >
                 Manage Devices
               </button>

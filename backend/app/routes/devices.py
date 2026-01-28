@@ -53,13 +53,39 @@ async def list_devices(
     limit: int = 100,
     db: AsyncSession = Depends(get_db)
 ):
-    """List all devices."""
+    """List all devices with their current stream state."""
     from sqlalchemy import select
     result = await db.execute(
         select(Device).offset(skip).limit(limit)
     )
     devices = result.scalars().all()
-    return devices
+
+    # Get stream states for all devices
+    device_ids = [device.id for device in devices]
+    stream_states = {}
+    if device_ids:
+        stream_query = select(Stream).where(Stream.camera_id.in_(device_ids))
+        stream_result = await db.execute(stream_query)
+        for stream in stream_result.scalars().all():
+            stream_states[stream.camera_id] = stream.state.value if stream.state else None
+
+    # Build response with stream state included
+    response = []
+    for device in devices:
+        device_dict = {
+            "id": device.id,
+            "name": device.name,
+            "description": device.description,
+            "rtsp_url": device.rtsp_url,
+            "is_active": device.is_active,
+            "location": device.location,
+            "created_at": device.created_at,
+            "updated_at": device.updated_at,
+            "stream_state": stream_states.get(device.id),
+        }
+        response.append(device_dict)
+
+    return response
 
 
 @router.get("/{device_id}", response_model=DeviceResponse)

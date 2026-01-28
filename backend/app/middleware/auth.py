@@ -57,6 +57,7 @@ JWT_AUTH_PREFIXES = [
     "/v2/consumers",
     "/v2/health",
     "/v2/metrics",
+    "/v2/system",  # System monitoring endpoints
     "/api/v1/devices",  # V1 device endpoints also support JWT auth
 ]
 

@@ -96,7 +96,17 @@
       "Bash(git rm:*)",
       "Bash(pgrep:*)",
       "Bash(timeout 1 tcpdump:*)",
-      "Bash(1)"
+      "Bash(1)",
+      "Bash(sudo du:*)",
+      "Bash(docker system:*)",
+      "Bash(docker builder prune:*)",
+      "Bash(docker image prune:*)",
+      "Bash(sudo rm:*)",
+      "Bash(sudo mkdir:*)",
+      "Bash(TOKEN=\"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJ2YXMtcG9ydGFsIiwic2NvcGVzIjpbInN0cmVhbXM6cmVhZCIsInN0cmVhbXM6Y29uc3VtZSIsImJvb2ttYXJrczpyZWFkIiwiYm9va21hcmtzOndyaXRlIiwic25hcHNob3RzOnJlYWQiLCJzbmFwc2hvdHM6d3JpdGUiXSwidHlwZSI6ImFjY2VzcyIsImlhdCI6MTc2OTUxMzAxMSwiZXhwIjoxNzY5NTE2NjExfQ.sH4kGj68LE2b8C7o44eXHUJ1AvzYA3oqmXD5vd633K4\")",
+      "Bash(npm run build:*)",
+      "Bash(npx next build:*)",
+      "Bash(npx tsc:*)"
     ],
     "deny": [],
     "ask": []

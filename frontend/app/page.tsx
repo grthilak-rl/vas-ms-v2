@@ -1,7 +1,7 @@
 import StatsGrid from "@/components/dashboard/StatsGrid";
 import RecentActivity from "@/components/dashboard/RecentActivity";
-import ActiveStreams from "@/components/dashboard/ActiveStreams";
 import SystemHealth from "@/components/dashboard/SystemHealth";
+import StreamResources from "@/components/dashboard/StreamResources";
 
 export default function Dashboard() {
   return (
@@ -19,9 +19,9 @@ export default function Dashboard() {
 
       {/* Main Content Grid */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Active Streams */}
+        {/* Stream Resources - takes 2 columns */}
         <div className="lg:col-span-2">
-          <ActiveStreams />
+          <StreamResources />
         </div>
 
         {/* System Health */}
@@ -37,5 +37,3 @@ export default function Dashboard() {
     </div>
   );
 }
-
-
