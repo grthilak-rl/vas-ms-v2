@@ -77,6 +77,10 @@ export default function StreamsPage() {
       const data = await getDevices();
       setDevices(data);
 
+      // Validate selectedDevices against actual device IDs to remove stale entries
+      const validDeviceIds = new Set(data.map(d => d.id));
+      setSelectedDevices(prev => prev.filter(id => validDeviceIds.has(id)));
+
       // Discover V2 streams for snapshot/bookmark capture
       await discoverStreams();
 
@@ -401,7 +405,7 @@ export default function StreamsPage() {
             </button>
             
             {dropdownOpen && (
-              <div className="absolute z-10 mt-1 w-full bg-white border border-gray-300 rounded-lg shadow-lg max-h-60 overflow-y-auto">
+              <div className="absolute z-[55] mt-1 w-full bg-white border border-gray-300 rounded-lg shadow-lg max-h-60 overflow-y-auto">
                 {devices.length === 0 ? (
                   <div className="px-4 py-2 text-sm text-gray-500">No devices available</div>
                 ) : (

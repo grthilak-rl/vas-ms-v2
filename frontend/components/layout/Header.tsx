@@ -1,19 +1,32 @@
 'use client';
 
 import { useState } from 'react';
-import { BellIcon, CameraIcon, ArrowRightOnRectangleIcon, KeyIcon, Bars3Icon, XMarkIcon } from '@heroicons/react/24/outline';
+import {
+  BellIcon,
+  CameraIcon,
+  ArrowRightOnRectangleIcon,
+  KeyIcon,
+  Bars3Icon,
+  XMarkIcon,
+  HomeIcon,
+  FilmIcon,
+  PhotoIcon,
+  BookmarkIcon,
+  ChartBarIcon,
+  CogIcon
+} from '@heroicons/react/24/outline';
 import { useAuth, DEFAULT_CLIENT_ID, DEFAULT_CLIENT_SECRET } from '@/contexts/AuthContext';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 
 const mobileNavItems = [
-  { name: 'Dashboard', href: '/' },
-  { name: 'Devices', href: '/devices' },
-  { name: 'Streams', href: '/streams' },
-  { name: 'Snapshots', href: '/snapshots' },
-  { name: 'Bookmarks', href: '/bookmarks' },
-  { name: 'Analytics', href: '/analytics' },
-  { name: 'Settings', href: '/settings' },
+  { name: 'Dashboard', href: '/', icon: HomeIcon },
+  { name: 'Devices', href: '/devices', icon: CameraIcon },
+  { name: 'Streams', href: '/streams', icon: FilmIcon },
+  { name: 'Snapshots', href: '/snapshots', icon: PhotoIcon },
+  { name: 'Bookmarks', href: '/bookmarks', icon: BookmarkIcon },
+  { name: 'Analytics', href: '/analytics', icon: ChartBarIcon },
+  { name: 'Settings', href: '/settings', icon: CogIcon },
 ];
 
 export default function Header() {
@@ -112,17 +125,19 @@ export default function Header() {
               {mobileNavItems.map((item) => {
                 const isActive = pathname === item.href ||
                                 (item.href !== '/' && pathname?.startsWith(item.href));
+                const Icon = item.icon;
                 return (
                   <Link
                     key={item.name}
                     href={item.href}
                     onClick={() => setShowMobileMenu(false)}
-                    className={`block px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
+                    className={`flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors ${
                       isActive
                         ? 'bg-blue-50 text-blue-700'
                         : 'text-gray-700 hover:bg-gray-50'
                     }`}
                   >
+                    <Icon className="h-5 w-5" />
                     {item.name}
                   </Link>
                 );
